@@ -17,7 +17,7 @@ import {
 import type Phaser from "phaser";
 import { getCharacterById } from "@/constants/characters";
 import { recordMatchResult } from "@/lib/firestore";
-import { leaveRoom, setPlayerReady } from "@/lib/rtdb";
+import { leaveRoom, resetRoomForRematch } from "@/lib/rtdb";
 import { useAuth } from "@/hooks/useAuth";
 import { useGameStore } from "@/stores/useGameStore";
 import { Button } from "@/components/ui/button";
@@ -178,9 +178,9 @@ export function PhaserArena() {
 
     if (mode === "multiplayer" && roomCode && role) {
       try {
-        await setPlayerReady(roomCode, role, false);
+        await resetRoomForRematch(roomCode);
       } catch (err) {
-        console.error("Error reiniciando estado en sala:", err);
+        console.error("Error reiniciando sala para revancha:", err);
       }
 
       if (role === "host") {
