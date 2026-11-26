@@ -21,15 +21,136 @@ import { AVATARS } from "@/constants/avatars";
 import type { AIDifficulty, FightMode, UserProfile } from "@/types";
 
 const USERS_COLLECTION = "users";
+const CACHE_PREFIX = "xela_cached_profile_";
+const PENDING_SYNC_PREFIX = "xela_pending_sync_";
 
 /**
- * Obtiene el perfil de un usuario desde Firestore.
+ * Guarda una copia del perfil del usuario en localStorage para uso offline.
  */
-export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+export function saveCachedUserProfile(profile: UserProfile): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(
+      `${CACHE_PREFIX}${profile.uid}`,
+      JSON.stringify(profile)
+    );
+  } catch (err) {
+    console.warn("No se pudo guardar perfil en caché local:", err);
+  }
+}
+
+/**
+ * Lee el perfil guardado localmente en el dispositivo.
+ */
+export function getCachedUserProfile(uid: string): UserProfile | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(`${CACHE_PREFIX}${uid}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as UserProfile;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Marca que hay cambios locales pendientes de subir a Firestore cuando vuelva la conexión.
+ */
+function markPendingSync(uid: string, pending: boolean): void {
+  if (typeof window === "undefined") return;
+  if (pending) {
+    localStorage.setItem(`${PENDING_SYNC_PREFIX}${uid}`, "true");
+  } else {
+    localStorage.removeItem(`${PENDING_SYNC_PREFIX}${uid}`);
+  }
+}
+
+function hasPendingSync(uid: string): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(`${PENDING_SYNC_PREFIX}${uid}`) === "true";
+}
+
+/**
+ * Sube a Firestore el progreso acumulado mientras el usuario jugó sin internet.
+ */
+export async function syncPendingOfflineProgress(
+  uid: string
+): Promise<UserProfile | null> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) return null;
+  if (!hasPendingSync(uid)) return null;
+
+  const localProfile = getCachedUserProfile(uid);
+  if (!localProfile) {
+    markPendingSync(uid, false);
+    return null;
+  }
+
   const ref = doc(db, USERS_COLLECTION, uid);
   const snap = await getDoc(ref);
-  if (!snap.exists()) return null;
-  return snap.data() as UserProfile;
+
+  if (snap.exists()) {
+    const remote = snap.data() as UserProfile;
+    // Combinar valores asegurando que no se pierdan victorias ni luchadores desbloqueados
+    const mergedWins = Math.max(remote.wins, localProfile.wins);
+    const mergedLosses = Math.max(remote.losses, localProfile.losses);
+    const mergedPoints = localProfile.rankingPoints;
+    const mergedStreak = localProfile.winStreak;
+    const mergedFighters = Array.from(
+      new Set([
+        ...(remote.unlockedFighters ?? DEFAULT_FIGHTER_IDS),
+        ...(localProfile.unlockedFighters ?? DEFAULT_FIGHTER_IDS),
+      ])
+    );
+
+    await updateDoc(ref, {
+      displayName: localProfile.displayName,
+      avatarId: localProfile.avatarId,
+      wins: mergedWins,
+      losses: mergedLosses,
+      winStreak: mergedStreak,
+      rankingPoints: mergedPoints,
+      unlockedFighters: mergedFighters,
+      lastLogin: serverTimestamp(),
+    });
+
+    const mergedProfile: UserProfile = {
+      ...remote,
+      displayName: localProfile.displayName,
+      avatarId: localProfile.avatarId,
+      wins: mergedWins,
+      losses: mergedLosses,
+      winStreak: mergedStreak,
+      rankingPoints: mergedPoints,
+      unlockedFighters: mergedFighters,
+    };
+
+    saveCachedUserProfile(mergedProfile);
+    markPendingSync(uid, false);
+    return mergedProfile;
+  }
+
+  markPendingSync(uid, false);
+  return localProfile;
+}
+
+/**
+ * Obtiene el perfil de un usuario desde Firestore (con respaldo local si no hay internet).
+ */
+export async function getUserProfile(uid: string): Promise<UserProfile | null> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    return getCachedUserProfile(uid);
+  }
+
+  try {
+    const ref = doc(db, USERS_COLLECTION, uid);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return getCachedUserProfile(uid);
+    const profile = snap.data() as UserProfile;
+    saveCachedUserProfile(profile);
+    return profile;
+  } catch {
+    return getCachedUserProfile(uid);
+  }
 }
 
 /**
@@ -39,6 +160,12 @@ export async function ensureUserProfile(
   user: User,
   overrideDisplayName?: string
 ): Promise<UserProfile> {
+  // Si no hay conexión, devolver el perfil cacheado del mismo usuario
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    const cached = getCachedUserProfile(user.uid);
+    if (cached) return cached;
+  }
+
   const ref = doc(db, USERS_COLLECTION, user.uid);
   const snap = await getDoc(ref);
 
@@ -47,13 +174,15 @@ export async function ensureUserProfile(
       lastLogin: serverTimestamp(),
     });
     const existing = snap.data() as UserProfile;
-    return {
+    const normalized: UserProfile = {
       ...existing,
       unlockedFighters:
         existing.unlockedFighters?.length > 0
           ? existing.unlockedFighters
           : [...DEFAULT_FIGHTER_IDS],
     };
+    saveCachedUserProfile(normalized);
+    return normalized;
   }
 
   const fallbackName =
@@ -80,25 +209,47 @@ export async function ensureUserProfile(
   };
 
   await setDoc(ref, newProfile);
-  return {
+  const created: UserProfile = {
     ...newProfile,
     createdAt: Date.now(),
     lastLogin: Date.now(),
   };
+  saveCachedUserProfile(created);
+  return created;
 }
 
 /**
- * Actualiza nombre visible y avatar predefinido del perfil.
+ * Actualiza nombre visible y avatar predefinido del perfil (online y offline).
  */
 export async function updateUserProfileData(
   uid: string,
   data: { displayName: string; avatarId: string }
 ): Promise<void> {
-  const ref = doc(db, USERS_COLLECTION, uid);
-  await updateDoc(ref, {
-    displayName: data.displayName.trim(),
-    avatarId: data.avatarId,
-  });
+  const cleanName = data.displayName.trim();
+  const cached = getCachedUserProfile(uid);
+
+  if (cached) {
+    saveCachedUserProfile({
+      ...cached,
+      displayName: cleanName,
+      avatarId: data.avatarId,
+    });
+  }
+
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    markPendingSync(uid, true);
+    return;
+  }
+
+  try {
+    const ref = doc(db, USERS_COLLECTION, uid);
+    await updateDoc(ref, {
+      displayName: cleanName,
+      avatarId: data.avatarId,
+    });
+  } catch {
+    markPendingSync(uid, true);
+  }
 }
 
 /**
@@ -128,6 +279,7 @@ export function calculatePointsDelta(
 
 /**
  * Registra el resultado de un combate, actualiza ranking y desbloquea nuevos luchadores.
+ * Funciona tanto online como offline (encolando la subida para cuando vuelva internet).
  */
 export async function recordMatchResult(params: {
   uid: string;
@@ -140,8 +292,14 @@ export async function recordMatchResult(params: {
   newlyUnlocked: string[];
 }> {
   const { uid, won, mode, difficulty = "medium" } = params;
-  const ref = doc(db, USERS_COLLECTION, uid);
-  const current = await getUserProfile(uid);
+
+  // Primero intentar sincronizar si había partidas previas pendientes y ya hay red
+  if (typeof navigator !== "undefined" && navigator.onLine && hasPendingSync(uid)) {
+    await syncPendingOfflineProgress(uid).catch(() => {});
+  }
+
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
 
   if (!current) {
     throw new Error("No se encontró el perfil del usuario.");
@@ -175,14 +333,6 @@ export async function recordMatchResult(params: {
 
   const nextUnlocked = Array.from(unlockedSet);
 
-  await updateDoc(ref, {
-    wins: nextWins,
-    losses: nextLosses,
-    winStreak: nextStreak,
-    rankingPoints: nextPoints,
-    unlockedFighters: nextUnlocked,
-  });
-
   const updatedProfile: UserProfile = {
     ...current,
     wins: nextWins,
@@ -192,6 +342,30 @@ export async function recordMatchResult(params: {
     unlockedFighters: nextUnlocked,
   };
 
+  // Guardar siempre en caché local inmediatamente
+  saveCachedUserProfile(updatedProfile);
+
+  // Si no hay internet, marcar pendiente y devolver progreso local sin error
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    markPendingSync(uid, true);
+    return { updatedProfile, pointsDelta, newlyUnlocked };
+  }
+
+  try {
+    const ref = doc(db, USERS_COLLECTION, uid);
+    await updateDoc(ref, {
+      wins: nextWins,
+      losses: nextLosses,
+      winStreak: nextStreak,
+      rankingPoints: nextPoints,
+      unlockedFighters: nextUnlocked,
+    });
+    markPendingSync(uid, false);
+  } catch (err) {
+    console.warn("Sin conexión al guardar en Firestore, encolado localmente:", err);
+    markPendingSync(uid, true);
+  }
+
   return { updatedProfile, pointsDelta, newlyUnlocked };
 }
 
@@ -199,6 +373,10 @@ export async function recordMatchResult(params: {
  * Obtiene la tabla de posiciones global ordenada por `rankingPoints`.
  */
 export async function getGlobalRanking(maxResults = 50): Promise<UserProfile[]> {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    return [];
+  }
+
   const usersRef = collection(db, USERS_COLLECTION);
   const q = query(
     usersRef,
