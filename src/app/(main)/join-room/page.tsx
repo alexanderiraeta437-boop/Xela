@@ -1,21 +1,42 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LogIn, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { joinRoom, normalizeRoomCode } from "@/lib/rtdb";
 import { RoomLobby } from "@/components/room/RoomLobby";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-export default function JoinRoomPage() {
+function JoinRoomContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, profile, selectedFighterId } = useAuth();
+
   const [inputCode, setInputCode] = useState("");
   const [joinedCode, setJoinedCode] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Si venimos de vuelta desde /fight?code=XXXXXX, permanecer en la sala como guest
+  useEffect(() => {
+    const existingCode = searchParams.get("code");
+    if (existingCode) {
+      const clean = normalizeRoomCode(existingCode);
+      if (clean.length === 6) {
+        setJoinedCode(clean);
+      }
+    }
+  }, [searchParams]);
 
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,6 +59,7 @@ export default function JoinRoomPage() {
         guestFighter: selectedFighterId,
       });
       setJoinedCode(clean);
+      router.replace(`/join-room?code=${clean}`);
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "No se pudo unir a la sala."
@@ -45,6 +67,12 @@ export default function JoinRoomPage() {
     } finally {
       setJoining(false);
     }
+  };
+
+  const handleLeaveLobby = () => {
+    setJoinedCode(null);
+    setInputCode("");
+    router.replace("/join-room");
   };
 
   return (
@@ -62,7 +90,7 @@ export default function JoinRoomPage() {
         <RoomLobby
           roomCode={joinedCode}
           role="guest"
-          onLeave={() => setJoinedCode(null)}
+          onLeave={handleLeaveLobby}
         />
       ) : (
         <Card className="mx-auto max-w-lg">
@@ -87,7 +115,9 @@ export default function JoinRoomPage() {
                   maxLength={6}
                   required
                   value={inputCode}
-                  onChange={(e) => setInputCode(normalizeRoomCode(e.target.value))}
+                  onChange={(e) =>
+                    setInputCode(normalizeRoomCode(e.target.value))
+                  }
                   placeholder="A1B2C3"
                   className="h-14 text-center font-mono text-2xl font-bold tracking-[0.35em] uppercase"
                 />
@@ -117,5 +147,19 @@ export default function JoinRoomPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function JoinRoomPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16 text-zinc-400">
+          <Loader2 className="h-6 w-6 animate-spin text-cyan-400" />
+        </div>
+      }
+    >
+      <JoinRoomContent />
+    </Suspense>
   );
 }
