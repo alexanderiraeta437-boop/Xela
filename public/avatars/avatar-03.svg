@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <radialGradient id="g-avatar-03" cx="50%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#FF6B00" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#09090D" stop-opacity="1"/>
+    </radialGradient>
+  </defs>
+  <rect width="200" height="200" rx="32" fill="#09090D"/>
+  <rect width="200" height="200" rx="32" fill="url(#g-avatar-03)"/>
+  <rect x="6" y="6" width="188" height="188" rx="28" fill="none" stroke="#FF6B00" stroke-opacity="0.45" stroke-width="3"/>
+  <path d="M100 40 L146 58 V100 C146 132 100 158 100 158 C100 158 54 132 54 100 V58 Z" fill="none" stroke="#FF6B00" stroke-width="8"/><path d="M100 62 L124 72 V98 C124 116 100 132 100 132 C100 132 76 116 76 98 V72 Z" fill="#FF6B00"/>
+</svg>

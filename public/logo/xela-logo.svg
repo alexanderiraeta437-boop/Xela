@@ -1,0 +1,12 @@
+<!-- ... existing code ... -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+    <title>Xela Logo</title>
+    
+    <g fill="#FFFFFF">
+        <!-- Trazo principal (Y / X) -->
+        <path d="M 105 90 L 172 90 L 250 190 L 328 90 L 395 90 L 162 390 L 95 390 L 217 233 Z"/>
+        
+        <!-- A estilizada con separación paralela -->
+        <path d="M 294 219 L 427 390 L 360 390 L 328 348 L 220 348 L 256 301 L 292 301 L 263 262 Z"/>
+    </g>
+</svg>

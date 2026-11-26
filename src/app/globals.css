@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 14% 3%;
+    --foreground: 0 0% 98%;
+    --card: 240 12% 6%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 12% 6%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 14% 4%;
+    --secondary: 240 9% 12%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 8% 14%;
+    --muted-foreground: 240 6% 62%;
+    --accent: 185 100% 50%;
+    --accent-foreground: 240 14% 4%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 8% 15%;
+    --input: 240 8% 16%;
+    --ring: 185 100% 50%;
+    --radius: 0.75rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    @apply bg-[#050507] text-foreground antialiased selection:bg-cyan-400/25 selection:text-white;
+  }
+}
+
+/* Fondo sutil de rejilla táctica */
+.bg-xela-grid {
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+/* Scrollbar discreto para tema oscuro */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #08080c;
+}
+::-webkit-scrollbar-thumb {
+  background: #23232f;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #353548;
+}

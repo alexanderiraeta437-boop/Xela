@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 340">
+  <defs>
+    <radialGradient id="aura-kai" cx="50%" cy="48%" r="52%">
+      <stop offset="0%" stop-color="#00F0FF" stop-opacity="0.34"/>
+      <stop offset="60%" stop-color="#0EA5E9" stop-opacity="0.1"/>
+      <stop offset="100%" stop-color="#050507" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="suit-kai" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E1E2A"/>
+      <stop offset="100%" stop-color="#0B0B10"/>
+    </linearGradient>
+  </defs>
+  <rect width="300" height="340" fill="none"/>
+  <ellipse cx="150" cy="180" rx="125" ry="145" fill="url(#aura-kai)"/>
+  <!-- Ground shadow -->
+  <ellipse cx="150" cy="316" rx="74" ry="12" fill="#000000" opacity="0.55"/>
+  <!-- Legs -->
+  <path d="M124 224 L106 306 L130 306 L144 236 Z" fill="#13131D" stroke="#00F0FF" stroke-width="2.5"/>
+  <path d="M176 224 L196 306 L172 306 L156 236 Z" fill="#13131D" stroke="#00F0FF" stroke-width="2.5"/>
+  <!-- Torso -->
+  <rect x="113" y="136" width="74" height="94" rx="18" fill="url(#suit-kai)" stroke="#00F0FF" stroke-width="3.5"/>
+  <!-- Chest Accent -->
+  <path d="M128 156 L150 184 L172 156" fill="none" stroke="#00F0FF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="150" cy="196" r="7" fill="#00F0FF"/>
+  <!-- Arms in combat stance -->
+  <path d="M113 152 L72 186 L96 206 L123 174 Z" fill="#181824" stroke="#00F0FF" stroke-width="3"/>
+  <circle cx="78" cy="196" r="14" fill="#00F0FF" stroke="#09090D" stroke-width="3"/>
+  <path d="M187 150 L226 168 L214 192 L179 174 Z" fill="#181824" stroke="#00F0FF" stroke-width="3"/>
+  <circle cx="224" cy="176" r="15" fill="#00F0FF" stroke="#09090D" stroke-width="3"/>
+  <!-- Head -->
+  <rect x="118" y="68" width="64" height="62" rx="22" fill="#1B1B27" stroke="#FFFFFF" stroke-opacity="0.25" stroke-width="2.5"/>
+  <path d="M108 86 L124 44 L148 70 L174 38 L178 74 L208 62 L192 98 Z" fill="#18181B" stroke="#00F0FF" stroke-width="3"/>
+  <path d="M134 94 L186 90 L182 108 L138 108 Z" fill="#00F0FF" opacity="0.9"/><line x1="142" y1="99" x2="176" y2="97" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"/>
+  <!-- Dynamic energy slash -->
+  <path d="M44 238 Q150 282 256 142" fill="none" stroke="#00F0FF" stroke-width="4" stroke-linecap="round" opacity="0.7"/>
+</svg>

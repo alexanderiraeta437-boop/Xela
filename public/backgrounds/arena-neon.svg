@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#050508"/>
+      <stop offset="65%" stop-color="#0C0D16"/>
+      <stop offset="100%" stop-color="#131628"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="62%" r="48%">
+      <stop offset="0%" stop-color="#00F0FF" stop-opacity="0.2"/>
+      <stop offset="50%" stop-color="#7B2FFF" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#050508" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1280" height="720" fill="url(#sky)"/>
+  <rect width="1280" height="720" fill="url(#glow)"/>
+  <!-- Distant skyline -->
+  <g fill="#0A0B12" stroke="#1F2438" stroke-width="2">
+    <rect x="40" y="250" width="90" height="310"/>
+    <rect x="150" y="190" width="110" height="370"/>
+    <rect x="290" y="290" width="80" height="270"/>
+    <rect x="430" y="210" width="120" height="350"/>
+    <rect x="740" y="220" width="110" height="340"/>
+    <rect x="890" y="170" width="130" height="390"/>
+    <rect x="1050" y="260" width="95" height="300"/>
+    <rect x="1165" y="210" width="85" height="350"/>
+  </g>
+  <!-- Arena floor -->
+  <rect x="0" y="560" width="1280" height="160" fill="#07080D"/>
+  <line x1="0" y1="560" x2="1280" y2="560" stroke="#00F0FF" stroke-opacity="0.55" stroke-width="3"/>
+  <g stroke="#1E293B" stroke-width="1.5">
+    <line x1="160" y1="560" x2="40" y2="720"/>
+    <line x1="360" y1="560" x2="270" y2="720"/>
+    <line x1="640" y1="560" x2="640" y2="720"/>
+    <line x1="920" y1="560" x2="1010" y2="720"/>
+    <line x1="1120" y1="560" x2="1240" y2="720"/>
+    <line x1="0" y1="610" x2="1280" y2="610"/>
+    <line x1="0" y1="665" x2="1280" y2="665"/>
+  </g>
+</svg>
