@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
@@ -15,11 +14,10 @@ import {
   Trophy,
   Zap,
 } from "lucide-react";
-import { ref, update, remove } from "firebase/database";
 import type Phaser from "phaser";
 import { getCharacterById } from "@/constants/characters";
 import { recordMatchResult } from "@/lib/firestore";
-import { rtdb } from "@/lib/firebase";
+import { leaveRoom, setPlayerReady } from "@/lib/rtdb";
 import { useAuth } from "@/hooks/useAuth";
 import { useGameStore } from "@/stores/useGameStore";
 import { Button } from "@/components/ui/button";
@@ -152,7 +150,6 @@ export function PhaserArena() {
     setProfile,
   ]);
 
-  // Activar pantalla completa y sugerir horizontal en móvil
   const handleFullscreen = async () => {
     try {
       if (!document.fullscreenElement && arenaWrapperRef.current) {
@@ -172,24 +169,18 @@ export function PhaserArena() {
         await document.exitFullscreen();
       }
     } catch {
-      // Ignorar si el navegador bloquea fullscreen sin gesto compatible
+      // Ignorar si el navegador restringe fullscreen
     }
   };
 
-  // Mantener la misma sala activa para revancha o volver al lobby de la sala
   const handleRematch = async () => {
     resetFightState();
 
-    if (mode === "multiplayer" && roomCode) {
+    if (mode === "multiplayer" && roomCode && role) {
       try {
-        const roomRef = ref(rtdb, `rooms/${roomCode}`);
-        await update(roomRef, {
-          status: "waiting",
-          hostReady: false,
-          guestReady: false,
-        });
+        await setPlayerReady(roomCode, role, false);
       } catch (err) {
-        console.error("Error reiniciando sala:", err);
+        console.error("Error reiniciando estado en sala:", err);
       }
 
       if (role === "host") {
@@ -203,21 +194,10 @@ export function PhaserArena() {
     setRematchNonce((n) => n + 1);
   };
 
-  // Salir y cerrar la sala si el usuario es el anfitrión
   const handleExitArena = async () => {
-    if (mode === "multiplayer" && roomCode) {
+    if (mode === "multiplayer" && roomCode && role) {
       try {
-        const roomRef = ref(rtdb, `rooms/${roomCode}`);
-        if (role === "host") {
-          await remove(roomRef);
-        } else {
-          await update(roomRef, {
-            guest: null,
-            guestFighter: null,
-            guestReady: false,
-            status: "waiting",
-          });
-        }
+        await leaveRoom(roomCode, role);
       } catch (err) {
         console.error("Error al salir de la sala:", err);
       }
@@ -383,9 +363,8 @@ export function PhaserArena() {
         </div>
       </div>
 
-      {/* Área Principal del Juego (Ocupa todo el alto restante) */}
+      {/* Área Principal del Juego */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden bg-black">
-        {/* Canvas de Phaser 3 escalado al máximo posible */}
         <div
           ref={containerRef}
           className="h-full w-full max-h-full max-w-full touch-none select-none [&>canvas]:mx-auto [&>canvas]:h-full [&>canvas]:w-full [&>canvas]:object-contain"
@@ -488,7 +467,7 @@ export function PhaserArena() {
         </span>
       </div>
 
-      {/* Modal de Resultado Post-Combate (A pantalla completa / legible en móvil y PC) */}
+      {/* Modal de Resultado Post-Combate */}
       {lastResult && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-3 backdrop-blur-md sm:p-6">
           <div className="max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-2xl border border-white/15 bg-[#0B0B10] p-5 text-center shadow-2xl sm:p-7">
