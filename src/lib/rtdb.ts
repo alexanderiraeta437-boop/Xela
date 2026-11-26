@@ -95,16 +95,12 @@ export async function joinRoom(params: {
 
   const room = snap.val() as RoomData;
 
-  if (room.host === params.guestUid) {
+  if (room.host === params.guestUid || room.guest === params.guestUid) {
     return room;
   }
 
   if (room.guest && room.guest !== params.guestUid) {
     throw new Error("La sala ya está llena.");
-  }
-
-  if (room.status === "finished") {
-    throw new Error("Esta sala ya finalizó.");
   }
 
   const updates: Partial<RoomData> = {
@@ -113,6 +109,7 @@ export async function joinRoom(params: {
     guestAvatar: params.guestAvatar,
     guestFighter: params.guestFighter,
     guestReady: false,
+    winnerUid: null,
     status: "ready",
   };
 
@@ -155,10 +152,35 @@ export async function setPlayerReady(
   const guestReady = role === "guest" ? ready : Boolean(room.guestReady);
   const canFight = Boolean(room.guest) && hostReady && guestReady;
 
+  if (canFight) {
+    // Limpiar datos de combate previos antes de iniciar la nueva ronda
+    await remove(ref(rtdb, `rooms/${code}/combat`));
+  }
+
   await update(roomRef, {
     hostReady,
     guestReady,
+    winnerUid: canFight ? null : room.winnerUid ?? null,
     status: canFight ? "fighting" : room.guest ? "ready" : "waiting",
+  });
+}
+
+/**
+ * Reinicia la sala al terminar una pelea para jugar revancha sin cerrar la sala.
+ */
+export async function resetRoomForRematch(roomCode: string): Promise<void> {
+  const code = normalizeRoomCode(roomCode);
+  const roomRef = ref(rtdb, `rooms/${code}`);
+  const snap = await get(roomRef);
+  if (!snap.exists()) return;
+
+  const room = snap.val() as RoomData;
+  await remove(ref(rtdb, `rooms/${code}/combat`));
+  await update(roomRef, {
+    hostReady: false,
+    guestReady: false,
+    winnerUid: null,
+    status: room.guest ? "ready" : "waiting",
   });
 }
 
@@ -232,16 +254,20 @@ export async function leaveRoom(
   roomCode: string,
   role: "host" | "guest"
 ): Promise<void> {
-  const roomRef = ref(rtdb, `rooms/${normalizeRoomCode(roomCode)}`);
+  const code = normalizeRoomCode(roomCode);
+  const roomRef = ref(rtdb, `rooms/${code}`);
   if (role === "host") {
     await remove(roomRef);
   } else {
+    await remove(ref(rtdb, `rooms/${code}/combat`));
     await update(roomRef, {
       guest: null,
       guestName: null,
       guestAvatar: null,
       guestFighter: null,
       guestReady: false,
+      hostReady: false,
+      winnerUid: null,
       status: "waiting",
     });
   }
