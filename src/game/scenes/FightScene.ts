@@ -15,7 +15,7 @@ import { FighterEntity } from "@/game/characters/FighterEntity";
 import { CombatSystem } from "@/game/systems/CombatSystem";
 import { AISystem } from "@/game/systems/AISystem";
 import { MultiplayerSyncSystem } from "@/game/systems/MultiplayerSyncSystem";
-import { finishRoom } from "@/lib/rtdb";
+import { finishRoom, subscribeRoom } from "@/lib/rtdb";
 
 /**
  * Escena principal de combate 2D side-view 1 vs 1.
@@ -27,6 +27,7 @@ export class FightScene extends Phaser.Scene {
   private combatSystem!: CombatSystem;
   private aiSystem: AISystem | null = null;
   private mpSync: MultiplayerSyncSystem | null = null;
+  private unsubscribeRoomSync: (() => void) | null = null;
 
   private keys!: {
     left: Phaser.Input.Keyboard.Key;
@@ -110,8 +111,8 @@ export class FightScene extends Phaser.Scene {
         this.runtimeConfig.roomCode,
         this.runtimeConfig.role
       );
+
       this.mpSync.start((remoteState) => {
-        // Sincronizar HP cuando el rival recibe o reporta estado
         if (remoteState.hp < this.opponentFighter.hp) {
           this.opponentFighter.hp = remoteState.hp;
         }
@@ -119,10 +120,52 @@ export class FightScene extends Phaser.Scene {
           this.concludeMatch(true, "K.O.");
         }
       });
+
+      // Escuchar el estado global de la sala para terminar en AMBAS pantallas al instante
+      this.unsubscribeRoomSync = subscribeRoom(
+        this.runtimeConfig.roomCode,
+        (roomData) => {
+          if (this.matchEnded) return;
+
+          // Si el anfitrión cerró la sala o se desconectó
+          if (!roomData) {
+            this.concludeMatch(true, "RIVAL DESCONECTADO");
+            return;
+          }
+
+          // Si el otro jugador abandonó la sala en medio de la pelea
+          if (
+            this.runtimeConfig.role === "host" &&
+            !roomData.guest
+          ) {
+            this.concludeMatch(true, "RIVAL ABANDONÓ");
+            return;
+          }
+
+          // Si cualquiera reportó que el combate terminó (K.O. o tiempo)
+          const roomWithWinner = roomData as typeof roomData & {
+            winner?: string;
+          };
+          if (roomData.status === "finished" && roomWithWinner.winner) {
+            const iWon =
+              roomWithWinner.winner === this.runtimeConfig.playerUid;
+            if (!iWon) {
+              this.localFighter.hp = 0;
+            } else {
+              this.opponentFighter.hp = 0;
+            }
+            this.concludeMatch(iWon, "K.O.");
+          }
+        }
+      );
     }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.mpSync?.destroy();
+      if (this.unsubscribeRoomSync) {
+        this.unsubscribeRoomSync();
+        this.unsubscribeRoomSync = null;
+      }
     });
 
     this.syncHud();
@@ -131,11 +174,9 @@ export class FightScene extends Phaser.Scene {
   private drawArenaBackground(): void {
     this.cameras.main.setBackgroundColor("#06060B");
 
-    // Cielo degradado simulado con bandas sutiles
     this.add.rectangle(ARENA_WIDTH / 2, 160, ARENA_WIDTH, 320, 0x090a12);
     this.add.rectangle(ARENA_WIDTH / 2, 380, ARENA_WIDTH, 160, 0x0d101d);
 
-    // Edificios estilizados en el fondo
     const buildings = [
       { x: 75, w: 80, h: 210 },
       { x: 185, w: 96, h: 265 },
@@ -151,7 +192,6 @@ export class FightScene extends Phaser.Scene {
         .setStrokeStyle(1, 0x1c2235, 0.7);
     }
 
-    // Marca de agua del logo Xela en el centro de la arena
     if (this.textures.exists("xela-logo")) {
       this.add
         .image(ARENA_WIDTH / 2, GROUND_Y - 125, "xela-logo")
@@ -159,7 +199,6 @@ export class FightScene extends Phaser.Scene {
         .setAlpha(0.05);
     }
 
-    // Suelo de combate
     this.add.rectangle(
       ARENA_WIDTH / 2,
       GROUND_Y + (ARENA_HEIGHT - GROUND_Y) / 2,
@@ -167,9 +206,10 @@ export class FightScene extends Phaser.Scene {
       ARENA_HEIGHT - GROUND_Y,
       0x07080d
     );
-    this.add.line(0, 0, 0, GROUND_Y, ARENA_WIDTH, GROUND_Y, 0x00f0ff, 0.45).setOrigin(0, 0);
+    this.add
+      .line(0, 0, 0, GROUND_Y, ARENA_WIDTH, GROUND_Y, 0x00f0ff, 0.45)
+      .setOrigin(0, 0);
 
-    // Líneas de perspectiva en el suelo
     for (let i = 1; i < 8; i++) {
       const topX = i * 120;
       const botX = 480 + (topX - 480) * 1.45;
@@ -211,7 +251,6 @@ export class FightScene extends Phaser.Scene {
 
     const dtSec = Math.min(delta, 40) / 1000;
 
-    // Temporizador de ronda
     this.secondAccumulator += delta;
     if (this.secondAccumulator >= 1000) {
       this.secondAccumulator -= 1000;
@@ -223,14 +262,17 @@ export class FightScene extends Phaser.Scene {
       }
     }
 
-    // Regeneración pasiva leve de energía
-    this.localFighter.energy = Math.min(100, this.localFighter.energy + dtSec * 3.5);
-    this.opponentFighter.energy = Math.min(100, this.opponentFighter.energy + dtSec * 3.5);
+    this.localFighter.energy = Math.min(
+      100,
+      this.localFighter.energy + dtSec * 3.5
+    );
+    this.opponentFighter.energy = Math.min(
+      100,
+      this.opponentFighter.energy + dtSec * 3.5
+    );
 
-    // 1. Procesar entrada del jugador local
     this.updateLocalPlayer(delta);
 
-    // 2. Procesar IA o sincronización multijugador del rival
     if (this.runtimeConfig.mode === "ai" && this.aiSystem) {
       this.updateAIPlayer(delta);
     } else if (this.mpSync) {
@@ -253,16 +295,13 @@ export class FightScene extends Phaser.Scene {
       }
     }
 
-    // 3. Física para luchador local (y para IA)
     this.stepPhysics(this.localFighter, dtSec, delta);
     if (this.runtimeConfig.mode === "ai") {
       this.stepPhysics(this.opponentFighter, dtSec, delta);
     }
 
-    // Separación suave si los luchadores quedan superpuestos en el suelo
     this.resolveBodyOverlap();
 
-    // 4. Evaluar ataque del jugador local contra el oponente
     if (isAttackAction(this.localFighter.action)) {
       const hit = this.combatSystem.resolveAttack(
         this.localFighter,
@@ -274,7 +313,6 @@ export class FightScene extends Phaser.Scene {
       }
     }
 
-    // 5. Evaluar ataque de la IA contra el jugador local
     if (
       this.runtimeConfig.mode === "ai" &&
       isAttackAction(this.opponentFighter.action)
@@ -289,10 +327,8 @@ export class FightScene extends Phaser.Scene {
       }
     }
 
-    // 6. Enviar estado local en multijugador
     this.mpSync?.pushLocal(delta, this.localFighter);
 
-    // 7. Actualizar renderizado y HUD
     this.localFighter.updateVisuals(delta, time);
     this.opponentFighter.updateVisuals(delta, time);
 
@@ -312,7 +348,6 @@ export class FightScene extends Phaser.Scene {
       return;
     }
 
-    // Mantener orientación hacia el oponente cuando está en reposo/movimiento
     if (!isAttackAction(f.action)) {
       f.facing = this.opponentFighter.x >= f.x ? 1 : -1;
     }
@@ -351,7 +386,6 @@ export class FightScene extends Phaser.Scene {
     this.lastVirtualHeavySeq = vc.heavySeq;
     this.lastVirtualSpecialSeq = vc.specialSeq;
 
-    // Si está ejecutando un ataque, esperar a que termine su duración
     if (isAttackAction(f.action)) {
       return;
     }
@@ -481,7 +515,6 @@ export class FightScene extends Phaser.Scene {
     f.x += f.vx * dtSec;
     f.y += f.vy * dtSec;
 
-    // Fricción horizontal cuando está en el suelo y en stun/ataque
     if (f.isGrounded && (f.stunRemaining > 0 || isAttackAction(f.action))) {
       f.vx *= 0.84;
     }
@@ -524,6 +557,7 @@ export class FightScene extends Phaser.Scene {
 
     this.syncHud(banner);
 
+    // Reportar inmediatamente el ganador a Firebase para que el rival reciba el fin de combate
     if (
       this.runtimeConfig.mode === "multiplayer" &&
       this.runtimeConfig.roomCode &&
