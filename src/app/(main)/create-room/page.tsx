@@ -1,18 +1,39 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PlusSquare, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { createRoom } from "@/lib/rtdb";
+import { createRoom, normalizeRoomCode } from "@/lib/rtdb";
 import { RoomLobby } from "@/components/room/RoomLobby";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-export default function CreateRoomPage() {
+function CreateRoomContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { user, profile, selectedFighterId } = useAuth();
+
   const [roomCode, setRoomCode] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Si venimos de vuelta desde /fight?code=XXXXXX, reconectar a esa misma sala
+  useEffect(() => {
+    const existingCode = searchParams.get("code");
+    if (existingCode) {
+      const clean = normalizeRoomCode(existingCode);
+      if (clean.length === 6) {
+        setRoomCode(clean);
+      }
+    }
+  }, [searchParams]);
 
   const handleCreate = async () => {
     if (!user) return;
@@ -26,12 +47,18 @@ export default function CreateRoomPage() {
         hostFighter: selectedFighterId,
       });
       setRoomCode(code);
+      router.replace(`/create-room?code=${code}`);
     } catch (err) {
       console.error(err);
       setError("No se pudo crear la sala. Verifica tu conexión.");
     } finally {
       setCreating(false);
     }
+  };
+
+  const handleLeaveLobby = () => {
+    setRoomCode(null);
+    router.replace("/create-room");
   };
 
   return (
@@ -49,7 +76,7 @@ export default function CreateRoomPage() {
         <RoomLobby
           roomCode={roomCode}
           role="host"
-          onLeave={() => setRoomCode(null)}
+          onLeave={handleLeaveLobby}
         />
       ) : (
         <Card className="mx-auto max-w-xl">
@@ -89,5 +116,19 @@ export default function CreateRoomPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function CreateRoomPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center py-16 text-zinc-400">
+          <Loader2 className="h-6 w-6 animate-spin text-cyan-400" />
+        </div>
+      }
+    >
+      <CreateRoomContent />
+    </Suspense>
   );
 }
