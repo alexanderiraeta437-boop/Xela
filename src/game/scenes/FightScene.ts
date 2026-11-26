@@ -121,34 +121,24 @@ export class FightScene extends Phaser.Scene {
         }
       });
 
-      // Escuchar el estado global de la sala para terminar en AMBAS pantallas al instante
+      // Escuchar cambios de la sala para finalizar en AMBOS jugadores al instante
       this.unsubscribeRoomSync = subscribeRoom(
         this.runtimeConfig.roomCode,
         (roomData) => {
           if (this.matchEnded) return;
 
-          // Si el anfitrión cerró la sala o se desconectó
           if (!roomData) {
             this.concludeMatch(true, "RIVAL DESCONECTADO");
             return;
           }
 
-          // Si el otro jugador abandonó la sala en medio de la pelea
-          if (
-            this.runtimeConfig.role === "host" &&
-            !roomData.guest
-          ) {
+          if (this.runtimeConfig.role === "host" && !roomData.guest) {
             this.concludeMatch(true, "RIVAL ABANDONÓ");
             return;
           }
 
-          // Si cualquiera reportó que el combate terminó (K.O. o tiempo)
-          const roomWithWinner = roomData as typeof roomData & {
-            winner?: string;
-          };
-          if (roomData.status === "finished" && roomWithWinner.winner) {
-            const iWon =
-              roomWithWinner.winner === this.runtimeConfig.playerUid;
+          if (roomData.status === "finished" && roomData.winnerUid) {
+            const iWon = roomData.winnerUid === this.runtimeConfig.playerUid;
             if (!iWon) {
               this.localFighter.hp = 0;
             } else {
@@ -557,7 +547,6 @@ export class FightScene extends Phaser.Scene {
 
     this.syncHud(banner);
 
-    // Reportar inmediatamente el ganador a Firebase para que el rival reciba el fin de combate
     if (
       this.runtimeConfig.mode === "multiplayer" &&
       this.runtimeConfig.roomCode &&
