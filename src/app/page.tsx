@@ -25,6 +25,9 @@ import { getCachedSession } from "@/lib/session";
 const APK_DOWNLOAD_URL =
   "https://github.com/alexanderiraeta437-boop/Xela/releases/download/v1.0.0/Xela-Combates-1v1-v1.0.apk";
 
+const APK_DOWNLOAD_URL =
+  "https://github.com/alexanderiraeta437-boop/Xela/releases/download/v1.0.0/Xela-Combates-1v1-v1.0.apk";
+
 export default function LandingPage() {
   const router = useRouter();
   const [isNativeApk, setIsNativeApk] = useState(false);
