@@ -9,63 +9,92 @@ import {
   saveCachedUserProfile,
   syncPendingOfflineProgress,
 } from "@/lib/firestore";
+import { createCachedAuthUser, getCachedSession } from "@/lib/session";
 import { useAuthStore } from "@/stores/useAuthStore";
 
 let authListenerAttached = false;
 
 /**
- * Sincroniza el estado de Firebase Auth con Zustand, caché local y Firestore.
+ * Sincroniza el estado de Firebase Auth con Zustand, `xela_cached_session` y Firestore.
+ * Permite arranque inmediato online/offline si existe una sesión guardada localmente.
  */
 export function useAuthSync(): void {
   const { setUser, setProfile, setLoading, setInitialized, reset } =
     useAuthStore();
 
   useEffect(() => {
+    // Hidratación inmediata desde `xela_cached_session` antes de que Firebase Auth responda
+    const bootSession = getCachedSession();
+    if (bootSession) {
+      setUser(auth.currentUser ?? createCachedAuthUser(bootSession));
+      setProfile(bootSession);
+      setLoading(false);
+      setInitialized(true);
+    }
+
     if (authListenerAttached) return;
     authListenerAttached = true;
 
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-      setLoading(true);
+    const syncWithRemote = async (firebaseUser: NonNullable<typeof auth.currentUser>) => {
+      if (typeof navigator !== "undefined" && !navigator.onLine) return;
+      try {
+        const synced = await syncPendingOfflineProgress(firebaseUser.uid);
+        const profile = synced ?? (await ensureUserProfile(firebaseUser));
+        saveCachedUserProfile(profile);
+        setProfile(profile);
+      } catch (err) {
+        console.warn("Modo sin conexión activo, usando xela_cached_session:", err);
+      }
+    };
 
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         setUser(firebaseUser);
 
-        // 1. Cargar de inmediato el perfil guardado en caché para evitar pantallas vacías sin red
-        const cached = getCachedUserProfile(firebaseUser.uid);
-        if (cached) {
+        // Cargar de inmediato perfil cacheado para evitar pantallas vacías sin red
+        const cached =
+          getCachedUserProfile(firebaseUser.uid) ?? getCachedSession();
+        if (cached && cached.uid === firebaseUser.uid) {
           setProfile(cached);
         }
 
-        // 2. Si hay internet, sincronizar progreso offline pendiente y actualizar desde Firestore
-        if (typeof navigator !== "undefined" && navigator.onLine) {
-          try {
-            const synced = await syncPendingOfflineProgress(firebaseUser.uid);
-            const profile = synced ?? (await ensureUserProfile(firebaseUser));
-            saveCachedUserProfile(profile);
-            setProfile(profile);
-          } catch (err) {
-            console.warn("Modo sin conexión activo, usando perfil en caché:", err);
-          }
-        }
-      } else {
-        reset();
-      }
+        setLoading(false);
+        setInitialized(true);
 
-      setLoading(false);
-      setInitialized(true);
+        // Sincronizar en segundo plano con Firestore cuando haya red
+        void syncWithRemote(firebaseUser);
+      } else {
+        // Si existe `xela_cached_session` válido (p. ej. arranque offline en Android APK),
+        // mantener la sesión activa offline hasta que vuelva la red o cierre sesión explícitamente.
+        const persistentSession = getCachedSession();
+        if (persistentSession) {
+          setUser(createCachedAuthUser(persistentSession));
+          setProfile(persistentSession);
+          setLoading(false);
+          setInitialized(true);
+        } else {
+          reset();
+        }
+      }
     });
 
-    // Listener global: cuando el celular recupere internet, subir progreso offline pendiente
+    // Cuando el dispositivo recupere internet, sincronizar cambios pendientes y sesión
     const handleOnline = async () => {
       const currentUser = auth.currentUser;
-      if (!currentUser) return;
-      try {
-        const syncedProfile = await syncPendingOfflineProgress(currentUser.uid);
-        if (syncedProfile) {
-          setProfile(syncedProfile);
+      if (currentUser) {
+        await syncWithRemote(currentUser);
+      } else {
+        const persistentSession = getCachedSession();
+        if (persistentSession) {
+          try {
+            const synced = await syncPendingOfflineProgress(persistentSession.uid);
+            if (synced) {
+              setProfile(synced);
+            }
+          } catch (err) {
+            console.warn("Pendiente sincronización con Auth:", err);
+          }
         }
-      } catch (err) {
-        console.error("Error sincronizando progreso al volver online:", err);
       }
     };
 

@@ -16,9 +16,20 @@ import { CombatSystem } from "@/game/systems/CombatSystem";
 import { AISystem } from "@/game/systems/AISystem";
 import { MultiplayerSyncSystem } from "@/game/systems/MultiplayerSyncSystem";
 import { finishRoom, subscribeRoom } from "@/lib/rtdb";
+import {
+  cleanupBattleAudio,
+  playAttackSwing,
+  playDefeatSound,
+  playRoundBell,
+  playVictoryFanfare,
+  startBattleMusic,
+  stopBattleMusic,
+  stopDashboardMusic,
+  unlockBattleAudio,
+} from "@/lib/battleAudio";
 
 /**
- * Escena principal de combate 2D side-view 1 vs 1.
+ * Escena principal de combate 2D side-view 1 vs 1 al mejor de 3 rounds (primero en ganar 2).
  */
 export class FightScene extends Phaser.Scene {
   private runtimeConfig!: MatchRuntimeConfig;
@@ -51,11 +62,23 @@ export class FightScene extends Phaser.Scene {
   private lastVirtualHeavySeq = 0;
   private lastVirtualSpecialSeq = 0;
 
+  private localStartX = 250;
+  private oppStartX = 710;
+  private isGuest = false;
+
+  private currentRound = 1;
+  private localRoundsWon = 0;
+  private opponentRoundsWon = 0;
+  private roundTransitioning = false;
+
   private roundTimer = ROUND_DURATION_SECONDS;
   private secondAccumulator = 0;
   private matchElapsedSeconds = 0;
   private hudSyncAccumulator = 0;
   private matchEnded = false;
+
+  private announcementText: Phaser.GameObjects.Text | null = null;
+  private announcementSubText: Phaser.GameObjects.Text | null = null;
 
   constructor() {
     super({ key: "FightScene" });
@@ -67,6 +90,10 @@ export class FightScene extends Phaser.Scene {
     this.secondAccumulator = 0;
     this.matchElapsedSeconds = 0;
     this.hudSyncAccumulator = 0;
+    this.currentRound = 1;
+    this.localRoundsWon = 0;
+    this.opponentRoundsWon = 0;
+    this.roundTransitioning = false;
     this.matchEnded = false;
 
     const initialControls = this.runtimeConfig.getVirtualControls();
@@ -79,27 +106,28 @@ export class FightScene extends Phaser.Scene {
     this.drawArenaBackground();
     this.setupInputs();
 
-    const isGuest =
+    this.isGuest =
       this.runtimeConfig.mode === "multiplayer" &&
       this.runtimeConfig.role === "guest";
 
     const playerChar = getCharacterById(this.runtimeConfig.playerFighterId);
     const opponentChar = getCharacterById(this.runtimeConfig.opponentFighterId);
 
-    const localStartX = isGuest ? 710 : 250;
-    const oppStartX = isGuest ? 250 : 710;
+    this.localStartX = this.isGuest ? 710 : 250;
+    this.oppStartX = this.isGuest ? 250 : 710;
 
     this.localFighter = new FighterEntity(
       this,
       playerChar,
-      localStartX,
-      !isGuest
+      this.localStartX,
+      !this.isGuest,
+      this.runtimeConfig.playerEquippedArtifacts ?? []
     );
     this.opponentFighter = new FighterEntity(
       this,
       opponentChar,
-      oppStartX,
-      isGuest
+      this.oppStartX,
+      this.isGuest
     );
 
     this.combatSystem = new CombatSystem(this);
@@ -113,15 +141,21 @@ export class FightScene extends Phaser.Scene {
       );
 
       this.mpSync.start((remoteState) => {
+        if (this.roundTransitioning || this.matchEnded) return;
+        if (
+          typeof remoteState.round === "number" &&
+          remoteState.round !== this.currentRound
+        ) {
+          return;
+        }
         if (remoteState.hp < this.opponentFighter.hp) {
           this.opponentFighter.hp = remoteState.hp;
         }
-        if (remoteState.hp <= 0 && !this.matchEnded) {
-          this.concludeMatch(true, "K.O.");
+        if (remoteState.hp <= 0) {
+          this.resolveRound(true, "K.O.");
         }
       });
 
-      // Escuchar cambios de la sala para finalizar en AMBOS jugadores al instante
       this.unsubscribeRoomSync = subscribeRoom(
         this.runtimeConfig.roomCode,
         (roomData) => {
@@ -141,8 +175,10 @@ export class FightScene extends Phaser.Scene {
             const iWon = roomData.winnerUid === this.runtimeConfig.playerUid;
             if (!iWon) {
               this.localFighter.hp = 0;
+              this.opponentRoundsWon = Math.max(2, this.opponentRoundsWon);
             } else {
               this.opponentFighter.hp = 0;
+              this.localRoundsWon = Math.max(2, this.localRoundsWon);
             }
             this.concludeMatch(iWon, "K.O.");
           }
@@ -151,6 +187,7 @@ export class FightScene extends Phaser.Scene {
     }
 
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      cleanupBattleAudio();
       this.mpSync?.destroy();
       if (this.unsubscribeRoomSync) {
         this.unsubscribeRoomSync();
@@ -158,7 +195,73 @@ export class FightScene extends Phaser.Scene {
       }
     });
 
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => {
+      cleanupBattleAudio();
+    });
+
+    this.input.on("pointerdown", unlockBattleAudio);
+    this.input.keyboard?.on("keydown", unlockBattleAudio);
+
+    stopDashboardMusic();
+    unlockBattleAudio();
+    playRoundBell();
+    startBattleMusic();
+
+    this.showCanvasAnnouncement("ROUND 1", "¡PELEA!", "#00F0FF", 850);
     this.syncHud();
+  }
+
+  private showCanvasAnnouncement(
+    title: string,
+    subtitle: string | null,
+    color = "#FFFFFF",
+    durationMs = 950
+  ): void {
+    this.announcementText?.destroy();
+    this.announcementSubText?.destroy();
+
+    this.announcementText = this.add
+      .text(ARENA_WIDTH / 2, ARENA_HEIGHT / 2 - 42, title, {
+        fontFamily: "sans-serif",
+        fontSize: "48px",
+        fontStyle: "bold",
+        color,
+        stroke: "#000000",
+        strokeThickness: 6,
+      })
+      .setOrigin(0.5)
+      .setDepth(35)
+      .setScale(0.85);
+
+    this.tweens.add({
+      targets: this.announcementText,
+      scale: 1,
+      duration: 200,
+      ease: "Back.easeOut",
+    });
+
+    if (subtitle) {
+      this.announcementSubText = this.add
+        .text(ARENA_WIDTH / 2, ARENA_HEIGHT / 2 + 10, subtitle, {
+          fontFamily: "sans-serif",
+          fontSize: "22px",
+          fontStyle: "bold",
+          color: "#FACC15",
+          stroke: "#000000",
+          strokeThickness: 5,
+        })
+        .setOrigin(0.5)
+        .setDepth(35);
+    }
+
+    if (durationMs > 0) {
+      this.time.delayedCall(durationMs, () => {
+        this.announcementText?.destroy();
+        this.announcementSubText?.destroy();
+        this.announcementText = null;
+        this.announcementSubText = null;
+      });
+    }
   }
 
   private drawArenaBackground(): void {
@@ -233,9 +336,12 @@ export class FightScene extends Phaser.Scene {
   }
 
   public update(time: number, delta: number): void {
-    if (this.matchEnded) {
+    if (this.matchEnded || this.roundTransitioning) {
       this.localFighter.updateVisuals(delta, time);
       this.opponentFighter.updateVisuals(delta, time);
+      if (this.roundTransitioning && !this.matchEnded) {
+        this.mpSync?.pushLocal(delta, this.localFighter, this.currentRound);
+      }
       return;
     }
 
@@ -254,11 +360,12 @@ export class FightScene extends Phaser.Scene {
 
     this.localFighter.energy = Math.min(
       100,
-      this.localFighter.energy + dtSec * 3.5
+      this.localFighter.energy + dtSec * 3.5 * this.localFighter.getEnergyGainMultiplier()
     );
     this.opponentFighter.energy = Math.min(
       100,
-      this.opponentFighter.energy + dtSec * 3.5
+      this.opponentFighter.energy +
+        dtSec * 3.5 * this.opponentFighter.getEnergyGainMultiplier()
     );
 
     this.updateLocalPlayer(delta);
@@ -267,7 +374,8 @@ export class FightScene extends Phaser.Scene {
       this.updateAIPlayer(delta);
     } else if (this.mpSync) {
       const { triggeredSpecial } = this.mpSync.applyRemoteToOpponent(
-        this.opponentFighter
+        this.opponentFighter,
+        this.currentRound
       );
       if (triggeredSpecial) {
         this.combatSystem.spawnSpecialVisual(this.opponentFighter);
@@ -279,7 +387,7 @@ export class FightScene extends Phaser.Scene {
           this.localFighter
         );
         if (hit?.knockout) {
-          this.concludeMatch(false, "K.O.");
+          this.resolveRound(false, "K.O.");
           return;
         }
       }
@@ -298,7 +406,7 @@ export class FightScene extends Phaser.Scene {
         this.opponentFighter
       );
       if (hit?.knockout) {
-        this.concludeMatch(true, "K.O.");
+        this.resolveRound(true, "K.O.");
         return;
       }
     }
@@ -312,12 +420,12 @@ export class FightScene extends Phaser.Scene {
         this.localFighter
       );
       if (hit?.knockout) {
-        this.concludeMatch(false, "K.O.");
+        this.resolveRound(false, "K.O.");
         return;
       }
     }
 
-    this.mpSync?.pushLocal(delta, this.localFighter);
+    this.mpSync?.pushLocal(delta, this.localFighter, this.currentRound);
 
     this.localFighter.updateVisuals(delta, time);
     this.opponentFighter.updateVisuals(delta, time);
@@ -390,12 +498,14 @@ export class FightScene extends Phaser.Scene {
     if (heavyJust) {
       f.setAction("heavy");
       f.vx = f.facing * 90;
+      playAttackSwing(true);
       return;
     }
 
     if (lightJust) {
       f.setAction("light");
       f.vx = f.facing * 50;
+      playAttackSwing(false);
       return;
     }
 
@@ -450,12 +560,14 @@ export class FightScene extends Phaser.Scene {
     if (decision.attack === "heavy") {
       ai.setAction("heavy");
       ai.vx = ai.facing * 80;
+      playAttackSwing(true);
       return;
     }
 
     if (decision.attack === "light") {
       ai.setAction("light");
       ai.vx = ai.facing * 45;
+      playAttackSwing(false);
       return;
     }
 
@@ -531,18 +643,95 @@ export class FightScene extends Phaser.Scene {
   private resolveTimeOver(): void {
     const localPct = this.localFighter.hp / this.localFighter.maxHp;
     const oppPct = this.opponentFighter.hp / this.opponentFighter.maxHp;
-    const won = localPct >= oppPct;
-    this.concludeMatch(won, "TIEMPO AGOTADO");
+    const wonRound = localPct >= oppPct;
+    this.resolveRound(wonRound, "TIEMPO AGOTADO");
+  }
+
+  /**
+   * Resuelve el fin de un round: si un jugador alcanza 2 rounds ganados termina el combate;
+   * si van 1-0 o 1-1 prepara el siguiente round (o Round 3 Desempate) sin salir de la escena.
+   */
+  private resolveRound(localWonRound: boolean, reason: string): void {
+    if (this.roundTransitioning || this.matchEnded) return;
+    this.roundTransitioning = true;
+
+    if (localWonRound) {
+      this.localRoundsWon += 1;
+      this.opponentFighter.setAction("ko");
+    } else {
+      this.opponentRoundsWon += 1;
+      this.localFighter.setAction("ko");
+    }
+
+    const roundWinnerLabel = localWonRound
+      ? "¡ROUND GANADO!"
+      : "ROUND PERDIDO";
+    this.showCanvasAnnouncement(
+      reason,
+      roundWinnerLabel,
+      localWonRound ? "#00F0FF" : "#FB7185",
+      1150
+    );
+    this.syncHud(`${reason} • ${roundWinnerLabel}`);
+
+    // Si alguien llegó a 2 rounds ganados, finaliza la partida completa
+    if (this.localRoundsWon >= 2 || this.opponentRoundsWon >= 2) {
+      this.concludeMatch(this.localRoundsWon >= 2, reason);
+      return;
+    }
+
+    // Preparar siguiente round (Round 2 o Round 3 Desempate si van 1-1)
+    const nextRound = this.currentRound + 1;
+    const isTiebreaker =
+      this.localRoundsWon === 1 && this.opponentRoundsWon === 1;
+
+    this.time.delayedCall(1350, () => {
+      if (this.matchEnded) return;
+
+      this.currentRound = nextRound;
+      this.roundTimer = ROUND_DURATION_SECONDS;
+      this.secondAccumulator = 0;
+
+      this.localFighter.resetForRound(this.localStartX, this.isGuest ? -1 : 1);
+      this.opponentFighter.resetForRound(this.oppStartX, this.isGuest ? 1 : -1);
+
+      const bannerTitle = isTiebreaker
+        ? `ROUND ${nextRound}`
+        : `ROUND ${nextRound}`;
+      const bannerSub = isTiebreaker ? "¡DESEMPATE 1-1!" : "PREPARADOS";
+      const bannerColor = isTiebreaker ? "#FACC15" : "#FFFFFF";
+
+      this.showCanvasAnnouncement(bannerTitle, bannerSub, bannerColor, 850);
+      this.syncHud(
+        isTiebreaker ? "ROUND 3 • DESEMPATE" : `ROUND ${nextRound}`
+      );
+
+      this.time.delayedCall(900, () => {
+        if (this.matchEnded) return;
+        playRoundBell();
+        this.showCanvasAnnouncement(
+          "¡PELEA!",
+          isTiebreaker ? "ROUND FINAL" : null,
+          "#00F0FF",
+          600
+        );
+        this.syncHud(null);
+        this.roundTransitioning = false;
+      });
+    });
   }
 
   private concludeMatch(won: boolean, banner: string): void {
     if (this.matchEnded) return;
     this.matchEnded = true;
+    stopBattleMusic();
 
     if (!won) {
       this.localFighter.setAction("ko");
+      playDefeatSound();
     } else {
       this.opponentFighter.setAction("ko");
+      playVictoryFanfare();
     }
 
     this.syncHud(banner);
@@ -558,26 +747,26 @@ export class FightScene extends Phaser.Scene {
       );
     }
 
-    this.time.delayedCall(1200, () => {
+    this.time.delayedCall(1300, () => {
       this.scene.start("ResultScene", {
         won,
-        banner,
+        banner: `${banner} (${this.localRoundsWon}-${this.opponentRoundsWon})`,
       });
       this.runtimeConfig.onMatchEnd({
         won,
         remainingHp: Math.round(this.localFighter.hp),
         durationSeconds: this.matchElapsedSeconds,
+        playerRoundsWon: this.localRoundsWon,
+        opponentRoundsWon: this.opponentRoundsWon,
       });
     });
   }
 
   private syncHud(bannerText: string | null = null): void {
-    const isGuest =
-      this.runtimeConfig.mode === "multiplayer" &&
-      this.runtimeConfig.role === "guest";
-
-    const p1 = isGuest ? this.opponentFighter : this.localFighter;
-    const p2 = isGuest ? this.localFighter : this.opponentFighter;
+    const p1 = this.isGuest ? this.opponentFighter : this.localFighter;
+    const p2 = this.isGuest ? this.localFighter : this.opponentFighter;
+    const p1Rounds = this.isGuest ? this.opponentRoundsWon : this.localRoundsWon;
+    const p2Rounds = this.isGuest ? this.localRoundsWon : this.opponentRoundsWon;
 
     this.runtimeConfig.onHudUpdate({
       p1Hp: Math.round(p1.hp),
@@ -589,6 +778,9 @@ export class FightScene extends Phaser.Scene {
       timer: this.roundTimer,
       comboP1: p1.comboHits,
       comboP2: p2.comboHits,
+      currentRound: this.currentRound,
+      p1RoundsWon: p1Rounds,
+      p2RoundsWon: p2Rounds,
       bannerText,
     });
   }

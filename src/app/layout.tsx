@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AuthProvider } from "@/components/layout/AuthProvider";
+import { AndroidBackHandler } from "@/components/layout/AndroidBackHandler";
 
 export const metadata: Metadata = {
   title: {
@@ -32,7 +33,10 @@ export default function RootLayout({
   return (
     <html lang="es" className="dark">
       <body className="min-h-screen bg-[#050507] font-sans text-white antialiased">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <AndroidBackHandler />
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

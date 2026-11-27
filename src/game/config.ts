@@ -67,12 +67,15 @@ export interface MatchRuntimeConfig {
   opponentFighterId: string;
   playerUid: string;
   opponentName: string;
+  playerEquippedArtifacts?: string[];
   getVirtualControls: () => VirtualControlsState;
   onHudUpdate: (partial: Partial<HudSnapshot>) => void;
   onMatchEnd: (payload: {
     won: boolean;
     remainingHp: number;
     durationSeconds: number;
+    playerRoundsWon: number;
+    opponentRoundsWon: number;
   }) => void;
 }
 

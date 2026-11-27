@@ -16,6 +16,7 @@ export class MultiplayerSyncSystem {
   private lastPushedActionSeq = -1;
   private latestRemote: PlayerCombatSync | null = null;
   private lastAppliedRemoteActionSeq = -1;
+  private appliedRemoteArtifactsKey = "";
 
   constructor(roomCode: string, localRole: "host" | "guest") {
     this.roomCode = roomCode;
@@ -35,7 +36,11 @@ export class MultiplayerSyncSystem {
     );
   }
 
-  public pushLocal(deltaMs: number, local: FighterEntity): void {
+  public pushLocal(
+    deltaMs: number,
+    local: FighterEntity,
+    currentRound: number
+  ): void {
     this.pushTimer += deltaMs;
     const actionChanged = local.actionSeq !== this.lastPushedActionSeq;
     if (!actionChanged && this.pushTimer < 55) return;
@@ -55,6 +60,8 @@ export class MultiplayerSyncSystem {
       action: local.action,
       actionSeq: local.actionSeq,
       hitSeq: local.hitSeq,
+      round: currentRound,
+      equippedArtifacts: local.equippedArtifactIds,
       updatedAt: Date.now(),
     };
 
@@ -64,11 +71,25 @@ export class MultiplayerSyncSystem {
   /**
    * Aplica suavemente el estado del rival sobre su entidad en Phaser.
    */
-  public applyRemoteToOpponent(opponent: FighterEntity): {
+  public applyRemoteToOpponent(
+    opponent: FighterEntity,
+    currentRound: number
+  ): {
     triggeredSpecial: boolean;
   } {
     const remote = this.latestRemote;
     if (!remote) return { triggeredSpecial: false };
+    if (typeof remote.round === "number" && remote.round !== currentRound) {
+      return { triggeredSpecial: false };
+    }
+
+    if (Array.isArray(remote.equippedArtifacts)) {
+      const key = remote.equippedArtifacts.join(",");
+      if (key !== this.appliedRemoteArtifactsKey) {
+        this.appliedRemoteArtifactsKey = key;
+        opponent.applyEquippedArtifacts(remote.equippedArtifacts);
+      }
+    }
 
     // Interpolación suave de posición para evitar saltos bruscos por latencia
     opponent.x += (remote.x - opponent.x) * 0.45;

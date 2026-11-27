@@ -17,22 +17,37 @@ import {
   DEFAULT_FIGHTER_IDS,
   getRequiredWins,
 } from "@/constants/characters";
-import { AVATARS } from "@/constants/avatars";
+import {
+  AVATARS,
+  DEFAULT_FREE_AVATAR_ID,
+  isAvatarUnlocked,
+} from "@/constants/avatars";
+import { getArtifactById } from "@/constants/artifacts";
+import {
+  getCachedSession,
+  normalizeUserProfile,
+  saveCachedSession,
+} from "@/lib/session";
 import type { AIDifficulty, FightMode, UserProfile } from "@/types";
 
 const USERS_COLLECTION = "users";
 const CACHE_PREFIX = "xela_cached_profile_";
 const PENDING_SYNC_PREFIX = "xela_pending_sync_";
 
+export const DAILY_STREAK_MIN_MS = 24 * 60 * 60 * 1000;
+export const DAILY_STREAK_MAX_MS = 48 * 60 * 60 * 1000;
+
 /**
- * Guarda una copia del perfil del usuario en localStorage para uso offline.
+ * Guarda una copia del perfil del usuario en localStorage (`xela_cached_session` y respaldo por uid).
  */
 export function saveCachedUserProfile(profile: UserProfile): void {
   if (typeof window === "undefined") return;
+  const normalized = normalizeUserProfile(profile);
+  saveCachedSession(normalized);
   try {
     localStorage.setItem(
-      `${CACHE_PREFIX}${profile.uid}`,
-      JSON.stringify(profile)
+      `${CACHE_PREFIX}${normalized.uid}`,
+      JSON.stringify(normalized)
     );
   } catch (err) {
     console.warn("No se pudo guardar perfil en caché local:", err);
@@ -46,8 +61,15 @@ export function getCachedUserProfile(uid: string): UserProfile | null {
   if (typeof window === "undefined") return null;
   try {
     const raw = localStorage.getItem(`${CACHE_PREFIX}${uid}`);
-    if (!raw) return null;
-    return JSON.parse(raw) as UserProfile;
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<UserProfile>;
+      if (parsed && parsed.uid) {
+        return normalizeUserProfile({ ...parsed, uid: parsed.uid });
+      }
+    }
+    const session = getCachedSession();
+    if (session && session.uid === uid) return session;
+    return null;
   } catch {
     return null;
   }
@@ -71,6 +93,34 @@ function hasPendingSync(uid: string): boolean {
 }
 
 /**
+ * Persiste cambios en caché local inmediatamente e intenta subir a Firestore
+ * (encolando si no hay conexión).
+ */
+async function persistProfileChanges(
+  updatedProfile: UserProfile,
+  firestoreFields: Record<string, unknown>
+): Promise<UserProfile> {
+  const normalized = normalizeUserProfile(updatedProfile);
+  saveCachedUserProfile(normalized);
+
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    markPendingSync(normalized.uid, true);
+    return normalized;
+  }
+
+  try {
+    const ref = doc(db, USERS_COLLECTION, normalized.uid);
+    await updateDoc(ref, firestoreFields);
+    markPendingSync(normalized.uid, false);
+  } catch (err) {
+    console.warn("Sin conexión al guardar en Firestore, encolado localmente:", err);
+    markPendingSync(normalized.uid, true);
+  }
+
+  return normalized;
+}
+
+/**
  * Sube a Firestore el progreso acumulado mientras el usuario jugó sin internet.
  */
 export async function syncPendingOfflineProgress(
@@ -89,8 +139,11 @@ export async function syncPendingOfflineProgress(
   const snap = await getDoc(ref);
 
   if (snap.exists()) {
-    const remote = snap.data() as UserProfile;
-    // Combinar valores asegurando que no se pierdan victorias ni luchadores desbloqueados
+    const remote = normalizeUserProfile({
+      ...(snap.data() as Partial<UserProfile>),
+      uid,
+    });
+
     const mergedWins = Math.max(remote.wins, localProfile.wins);
     const mergedLosses = Math.max(remote.losses, localProfile.losses);
     const mergedPoints = localProfile.rankingPoints;
@@ -101,28 +154,54 @@ export async function syncPendingOfflineProgress(
         ...(localProfile.unlockedFighters ?? DEFAULT_FIGHTER_IDS),
       ])
     );
+    const mergedOwnedArtifacts = Array.from(
+      new Set([...(remote.ownedArtifacts ?? []), ...(localProfile.ownedArtifacts ?? [])])
+    );
+    const mergedUnlockedAvatars = Array.from(
+      new Set([
+        DEFAULT_FREE_AVATAR_ID,
+        ...(remote.unlockedAvatars ?? []),
+        ...(localProfile.unlockedAvatars ?? []),
+      ])
+    );
 
-    await updateDoc(ref, {
+    const localClaimTs = localProfile.lastClaimTimestamp ?? 0;
+    const remoteClaimTs = remote.lastClaimTimestamp ?? 0;
+    const useLocalClaim = localClaimTs >= remoteClaimTs;
+
+    const mergedLastClaim = useLocalClaim
+      ? localProfile.lastClaimTimestamp
+      : remote.lastClaimTimestamp;
+    const mergedLoginStreak = useLocalClaim
+      ? localProfile.loginStreak
+      : remote.loginStreak;
+
+    const payload = {
       displayName: localProfile.displayName,
-      avatarId: localProfile.avatarId,
+      avatarId: mergedUnlockedAvatars.includes(localProfile.avatarId)
+        ? localProfile.avatarId
+        : DEFAULT_FREE_AVATAR_ID,
       wins: mergedWins,
       losses: mergedLosses,
       winStreak: mergedStreak,
       rankingPoints: mergedPoints,
       unlockedFighters: mergedFighters,
+      coins: localProfile.coins,
+      loginStreak: mergedLoginStreak,
+      lastClaimTimestamp: mergedLastClaim,
+      ownedArtifacts: mergedOwnedArtifacts,
+      equippedArtifacts: localProfile.equippedArtifacts,
+      unlockedAvatars: mergedUnlockedAvatars,
       lastLogin: serverTimestamp(),
-    });
-
-    const mergedProfile: UserProfile = {
-      ...remote,
-      displayName: localProfile.displayName,
-      avatarId: localProfile.avatarId,
-      wins: mergedWins,
-      losses: mergedLosses,
-      winStreak: mergedStreak,
-      rankingPoints: mergedPoints,
-      unlockedFighters: mergedFighters,
     };
+
+    await updateDoc(ref, payload);
+
+    const mergedProfile = normalizeUserProfile({
+      ...remote,
+      ...payload,
+      lastLogin: Date.now(),
+    });
 
     saveCachedUserProfile(mergedProfile);
     markPendingSync(uid, false);
@@ -145,7 +224,10 @@ export async function getUserProfile(uid: string): Promise<UserProfile | null> {
     const ref = doc(db, USERS_COLLECTION, uid);
     const snap = await getDoc(ref);
     if (!snap.exists()) return getCachedUserProfile(uid);
-    const profile = snap.data() as UserProfile;
+    const profile = normalizeUserProfile({
+      ...(snap.data() as Partial<UserProfile>),
+      uid,
+    });
     saveCachedUserProfile(profile);
     return profile;
   } catch {
@@ -160,7 +242,6 @@ export async function ensureUserProfile(
   user: User,
   overrideDisplayName?: string
 ): Promise<UserProfile> {
-  // Si no hay conexión, devolver el perfil cacheado del mismo usuario
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     const cached = getCachedUserProfile(user.uid);
     if (cached) return cached;
@@ -173,14 +254,10 @@ export async function ensureUserProfile(
     await updateDoc(ref, {
       lastLogin: serverTimestamp(),
     });
-    const existing = snap.data() as UserProfile;
-    const normalized: UserProfile = {
-      ...existing,
-      unlockedFighters:
-        existing.unlockedFighters?.length > 0
-          ? existing.unlockedFighters
-          : [...DEFAULT_FIGHTER_IDS],
-    };
+    const normalized = normalizeUserProfile({
+      ...(snap.data() as Partial<UserProfile>),
+      uid: user.uid,
+    });
     saveCachedUserProfile(normalized);
     return normalized;
   }
@@ -191,10 +268,7 @@ export async function ensureUserProfile(
     user.email?.split("@")[0] ||
     "Luchador";
 
-  const newProfile: Omit<UserProfile, "createdAt" | "lastLogin"> & {
-    createdAt: ReturnType<typeof serverTimestamp>;
-    lastLogin: ReturnType<typeof serverTimestamp>;
-  } = {
+  const newProfileDoc = {
     uid: user.uid,
     email: user.email ?? "",
     displayName: fallbackName,
@@ -204,16 +278,22 @@ export async function ensureUserProfile(
     winStreak: 0,
     unlockedFighters: [...DEFAULT_FIGHTER_IDS],
     rankingPoints: 1000,
+    coins: 0,
+    loginStreak: 0,
+    lastClaimTimestamp: null,
+    ownedArtifacts: [] as string[],
+    equippedArtifacts: {} as Record<string, string[]>,
+    unlockedAvatars: [DEFAULT_FREE_AVATAR_ID],
     createdAt: serverTimestamp(),
     lastLogin: serverTimestamp(),
   };
 
-  await setDoc(ref, newProfile);
-  const created: UserProfile = {
-    ...newProfile,
+  await setDoc(ref, newProfileDoc);
+  const created = normalizeUserProfile({
+    ...newProfileDoc,
     createdAt: Date.now(),
     lastLogin: Date.now(),
-  };
+  });
   saveCachedUserProfile(created);
   return created;
 }
@@ -224,32 +304,28 @@ export async function ensureUserProfile(
 export async function updateUserProfileData(
   uid: string,
   data: { displayName: string; avatarId: string }
-): Promise<void> {
+): Promise<UserProfile | null> {
   const cleanName = data.displayName.trim();
-  const cached = getCachedUserProfile(uid);
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
 
-  if (cached) {
-    saveCachedUserProfile({
-      ...cached,
-      displayName: cleanName,
-      avatarId: data.avatarId,
-    });
-  }
+  if (!current) return null;
 
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
-    markPendingSync(uid, true);
-    return;
-  }
+  const unlocked = current.unlockedAvatars ?? [DEFAULT_FREE_AVATAR_ID];
+  const validAvatar = isAvatarUnlocked(data.avatarId, unlocked)
+    ? data.avatarId
+    : current.avatarId;
 
-  try {
-    const ref = doc(db, USERS_COLLECTION, uid);
-    await updateDoc(ref, {
-      displayName: cleanName,
-      avatarId: data.avatarId,
-    });
-  } catch {
-    markPendingSync(uid, true);
-  }
+  const updated: UserProfile = {
+    ...current,
+    displayName: cleanName,
+    avatarId: validAvatar,
+  };
+
+  return persistProfileChanges(updated, {
+    displayName: cleanName,
+    avatarId: validAvatar,
+  });
 }
 
 /**
@@ -278,7 +354,22 @@ export function calculatePointsDelta(
 }
 
 /**
- * Registra el resultado de un combate, actualiza ranking y desbloquea nuevos luchadores.
+ * Economía exigente: calcula Xela Coins otorgadas al terminar una batalla completa (2 rounds).
+ */
+export function calculateBattleCoins(
+  won: boolean,
+  mode: FightMode,
+  difficulty: AIDifficulty = "medium"
+): number {
+  if (!won) return 5;
+  if (mode === "multiplayer") return 50;
+  if (difficulty === "hard") return 50;
+  if (difficulty === "medium") return 35;
+  return 20;
+}
+
+/**
+ * Registra el resultado de un combate, actualiza ranking, monedas y desbloquea luchadores.
  * Funciona tanto online como offline (encolando la subida para cuando vuelva internet).
  */
 export async function recordMatchResult(params: {
@@ -289,11 +380,11 @@ export async function recordMatchResult(params: {
 }): Promise<{
   updatedProfile: UserProfile;
   pointsDelta: number;
+  coinsEarned: number;
   newlyUnlocked: string[];
 }> {
   const { uid, won, mode, difficulty = "medium" } = params;
 
-  // Primero intentar sincronizar si había partidas previas pendientes y ya hay red
   if (typeof navigator !== "undefined" && navigator.onLine && hasPendingSync(uid)) {
     await syncPendingOfflineProgress(uid).catch(() => {});
   }
@@ -314,7 +405,9 @@ export async function recordMatchResult(params: {
     difficulty,
     current.winStreak
   );
+  const coinsEarned = calculateBattleCoins(won, mode, difficulty);
   const nextPoints = Math.max(0, current.rankingPoints + pointsDelta);
+  const nextCoins = Math.max(0, (current.coins ?? 0) + coinsEarned);
 
   const unlockedSet = new Set(
     current.unlockedFighters?.length
@@ -339,34 +432,271 @@ export async function recordMatchResult(params: {
     losses: nextLosses,
     winStreak: nextStreak,
     rankingPoints: nextPoints,
+    coins: nextCoins,
     unlockedFighters: nextUnlocked,
   };
 
-  // Guardar siempre en caché local inmediatamente
-  saveCachedUserProfile(updatedProfile);
+  const persisted = await persistProfileChanges(updatedProfile, {
+    wins: nextWins,
+    losses: nextLosses,
+    winStreak: nextStreak,
+    rankingPoints: nextPoints,
+    coins: nextCoins,
+    unlockedFighters: nextUnlocked,
+  });
 
-  // Si no hay internet, marcar pendiente y devolver progreso local sin error
-  if (typeof navigator !== "undefined" && !navigator.onLine) {
-    markPendingSync(uid, true);
-    return { updatedProfile, pointsDelta, newlyUnlocked };
+  return { updatedProfile: persisted, pointsDelta, coinsEarned, newlyUnlocked };
+}
+
+/**
+ * Calcula estado de disponibilidad de la racha diaria de 24 horas.
+ */
+export function getDailyStreakStatus(
+  profile: UserProfile | null,
+  nowMs = Date.now()
+): {
+  canClaim: boolean;
+  msUntilNextClaim: number;
+  currentDisplayStreak: number;
+  projectedStreak: number;
+  projectedRewardCoins: number;
+  streakExpired: boolean;
+} {
+  const lastClaim = profile?.lastClaimTimestamp ?? null;
+  const savedStreak = profile?.loginStreak ?? 0;
+
+  if (!lastClaim) {
+    return {
+      canClaim: true,
+      msUntilNextClaim: 0,
+      currentDisplayStreak: savedStreak,
+      projectedStreak: 1,
+      projectedRewardCoins: Math.min(75, 25 + 1 * 5),
+      streakExpired: false,
+    };
   }
 
-  try {
-    const ref = doc(db, USERS_COLLECTION, uid);
-    await updateDoc(ref, {
-      wins: nextWins,
-      losses: nextLosses,
-      winStreak: nextStreak,
-      rankingPoints: nextPoints,
-      unlockedFighters: nextUnlocked,
-    });
-    markPendingSync(uid, false);
-  } catch (err) {
-    console.warn("Sin conexión al guardar en Firestore, encolado localmente:", err);
-    markPendingSync(uid, true);
+  const elapsed = Math.max(0, nowMs - lastClaim);
+  if (elapsed < DAILY_STREAK_MIN_MS) {
+    const nextStreak = savedStreak + 1;
+    return {
+      canClaim: false,
+      msUntilNextClaim: DAILY_STREAK_MIN_MS - elapsed,
+      currentDisplayStreak: savedStreak,
+      projectedStreak: nextStreak,
+      projectedRewardCoins: Math.min(75, 25 + nextStreak * 5),
+      streakExpired: false,
+    };
   }
 
-  return { updatedProfile, pointsDelta, newlyUnlocked };
+  const streakExpired = elapsed > DAILY_STREAK_MAX_MS;
+  const nextStreak = streakExpired ? 1 : Math.max(1, savedStreak + 1);
+  return {
+    canClaim: true,
+    msUntilNextClaim: 0,
+    currentDisplayStreak: streakExpired ? 0 : savedStreak,
+    projectedStreak: nextStreak,
+    projectedRewardCoins: Math.min(75, 25 + nextStreak * 5),
+    streakExpired,
+  };
+}
+
+/**
+ * Reclama la recompensa diaria cada 24h (25 base + 5 por día, máximo 75 monedas/día).
+ */
+export async function claimDailyStreakReward(uid: string): Promise<{
+  updatedProfile: UserProfile;
+  rewardCoins: number;
+  newStreak: number;
+}> {
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
+
+  if (!current) {
+    throw new Error("No se encontró el perfil del usuario.");
+  }
+
+  const now = Date.now();
+  const status = getDailyStreakStatus(current, now);
+  if (!status.canClaim) {
+    throw new Error("Aún debes esperar 24 horas para reclamar tu racha diaria.");
+  }
+
+  const newStreak = status.projectedStreak;
+  const rewardCoins = Math.min(75, 25 + newStreak * 5);
+  const nextCoins = (current.coins ?? 0) + rewardCoins;
+
+  const updatedProfile: UserProfile = {
+    ...current,
+    coins: nextCoins,
+    loginStreak: newStreak,
+    lastClaimTimestamp: now,
+  };
+
+  const persisted = await persistProfileChanges(updatedProfile, {
+    coins: nextCoins,
+    loginStreak: newStreak,
+    lastClaimTimestamp: now,
+  });
+
+  return {
+    updatedProfile: persisted,
+    rewardCoins,
+    newStreak,
+  };
+}
+
+/**
+ * Compra un artefacto exclusivo y lo equipa automáticamente en su luchador.
+ */
+export async function purchaseArtifact(
+  uid: string,
+  artifactId: string
+): Promise<UserProfile> {
+  const artifact = getArtifactById(artifactId);
+  if (!artifact) {
+    throw new Error("El artefacto no existe.");
+  }
+
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
+  if (!current) {
+    throw new Error("No se encontró el perfil del usuario.");
+  }
+
+  if (current.ownedArtifacts.includes(artifactId)) {
+    throw new Error("Ya posees este artefacto.");
+  }
+
+  if (current.coins < artifact.price) {
+    throw new Error(
+      `Necesitas ${artifact.price} Xela Coins para comprar este artefacto.`
+    );
+  }
+
+  const nextCoins = current.coins - artifact.price;
+  const nextOwned = Array.from(new Set([...current.ownedArtifacts, artifactId]));
+
+  const currentFighterEquipped = current.equippedArtifacts[artifact.fighterId] ?? [];
+  const filteredSameSlot = currentFighterEquipped.filter((id) => {
+    const existing = getArtifactById(id);
+    return existing && existing.slot !== artifact.slot;
+  });
+  const nextEquipped = {
+    ...current.equippedArtifacts,
+    [artifact.fighterId]: [...filteredSameSlot, artifactId],
+  };
+
+  const updatedProfile: UserProfile = {
+    ...current,
+    coins: nextCoins,
+    ownedArtifacts: nextOwned,
+    equippedArtifacts: nextEquipped,
+  };
+
+  return persistProfileChanges(updatedProfile, {
+    coins: nextCoins,
+    ownedArtifacts: nextOwned,
+    equippedArtifacts: nextEquipped,
+  });
+}
+
+/**
+ * Equipa o desequipa un artefacto ya comprado para su luchador exclusivo.
+ */
+export async function toggleEquipArtifact(
+  uid: string,
+  artifactId: string
+): Promise<UserProfile> {
+  const artifact = getArtifactById(artifactId);
+  if (!artifact) {
+    throw new Error("El artefacto no existe.");
+  }
+
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
+  if (!current) {
+    throw new Error("No se encontró el perfil del usuario.");
+  }
+
+  if (!current.ownedArtifacts.includes(artifactId)) {
+    throw new Error("Debes comprar este artefacto primero.");
+  }
+
+  const currentList = current.equippedArtifacts[artifact.fighterId] ?? [];
+  const isEquipped = currentList.includes(artifactId);
+
+  const nextList = isEquipped
+    ? currentList.filter((id) => id !== artifactId)
+    : [
+        ...currentList.filter((id) => {
+          const item = getArtifactById(id);
+          return item && item.slot !== artifact.slot;
+        }),
+        artifactId,
+      ];
+
+  const nextEquipped = {
+    ...current.equippedArtifacts,
+    [artifact.fighterId]: nextList,
+  };
+
+  const updatedProfile: UserProfile = {
+    ...current,
+    equippedArtifacts: nextEquipped,
+  };
+
+  return persistProfileChanges(updatedProfile, {
+    equippedArtifacts: nextEquipped,
+  });
+}
+
+/**
+ * Desbloquea un avatar de perfil pagando con Xela Coins (online y offline).
+ */
+export async function purchaseAvatar(
+  uid: string,
+  avatarId: string
+): Promise<UserProfile> {
+  const avatar = AVATARS.find((a) => a.id === avatarId);
+  if (!avatar) {
+    throw new Error("El avatar seleccionado no existe.");
+  }
+
+  const current =
+    getCachedUserProfile(uid) ?? (await getUserProfile(uid));
+  if (!current) {
+    throw new Error("No se encontró el perfil del usuario.");
+  }
+
+  const unlocked = current.unlockedAvatars ?? [DEFAULT_FREE_AVATAR_ID];
+  if (isAvatarUnlocked(avatarId, unlocked)) {
+    throw new Error("Este avatar ya está desbloqueado.");
+  }
+
+  if (current.coins < avatar.price) {
+    throw new Error(
+      `Necesitas ${avatar.price} Xela Coins para desbloquear este avatar.`
+    );
+  }
+
+  const nextCoins = current.coins - avatar.price;
+  const nextUnlockedAvatars = Array.from(
+    new Set([DEFAULT_FREE_AVATAR_ID, ...unlocked, avatarId])
+  );
+
+  const updatedProfile: UserProfile = {
+    ...current,
+    coins: nextCoins,
+    unlockedAvatars: nextUnlockedAvatars,
+    avatarId,
+  };
+
+  return persistProfileChanges(updatedProfile, {
+    coins: nextCoins,
+    unlockedAvatars: nextUnlockedAvatars,
+    avatarId,
+  });
 }
 
 /**
@@ -384,5 +714,10 @@ export async function getGlobalRanking(maxResults = 50): Promise<UserProfile[]> 
     limit(maxResults)
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => d.data() as UserProfile);
+  return snapshot.docs.map((d) =>
+    normalizeUserProfile({
+      ...(d.data() as Partial<UserProfile>),
+      uid: d.id,
+    })
+  );
 }

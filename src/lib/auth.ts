@@ -10,6 +10,8 @@ import {
 } from "firebase/auth";
 import { auth } from "./firebase";
 import { ensureUserProfile } from "./firestore";
+import { clearCachedSession } from "./session";
+import { useAuthStore } from "@/stores/useAuthStore";
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });
@@ -26,7 +28,9 @@ export async function registerWithEmail(
   const cleanName = displayName.trim() || email.split("@")[0] || "Luchador";
 
   await updateProfile(credential.user, { displayName: cleanName });
-  await ensureUserProfile(credential.user, cleanName);
+  const profile = await ensureUserProfile(credential.user, cleanName);
+  useAuthStore.getState().setUser(credential.user);
+  useAuthStore.getState().setProfile(profile);
 
   return credential.user;
 }
@@ -39,7 +43,9 @@ export async function loginWithEmail(
   password: string
 ): Promise<User> {
   const credential = await signInWithEmailAndPassword(auth, email, password);
-  await ensureUserProfile(credential.user);
+  const profile = await ensureUserProfile(credential.user);
+  useAuthStore.getState().setUser(credential.user);
+  useAuthStore.getState().setProfile(profile);
   return credential.user;
 }
 
@@ -48,7 +54,9 @@ export async function loginWithEmail(
  */
 export async function loginWithGoogle(): Promise<User> {
   const credential = await signInWithPopup(auth, googleProvider);
-  await ensureUserProfile(credential.user);
+  const profile = await ensureUserProfile(credential.user);
+  useAuthStore.getState().setUser(credential.user);
+  useAuthStore.getState().setProfile(profile);
   return credential.user;
 }
 
@@ -60,8 +68,15 @@ export async function recoverPassword(email: string): Promise<void> {
 }
 
 /**
- * Cierra la sesión actual del usuario.
+ * Cierra la sesión actual del usuario limpiando `xela_cached_session`
+ * y haciendo `signOut` en Firebase (funciona incluso sin conexión).
  */
 export async function signOutUser(): Promise<void> {
-  await firebaseSignOut(auth);
+  clearCachedSession();
+  useAuthStore.getState().reset();
+  try {
+    await firebaseSignOut(auth);
+  } catch {
+    // Permitir cierre de sesión limpio aunque no haya conexión
+  }
 }

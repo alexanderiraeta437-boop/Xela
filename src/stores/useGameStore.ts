@@ -11,6 +11,9 @@ export interface HudSnapshot {
   timer: number;
   comboP1: number;
   comboP2: number;
+  currentRound: number;
+  p1RoundsWon: number;
+  p2RoundsWon: number;
   bannerText: string | null;
 }
 
@@ -65,6 +68,9 @@ const DEFAULT_HUD: HudSnapshot = {
   timer: 99,
   comboP1: 0,
   comboP2: 0,
+  currentRound: 1,
+  p1RoundsWon: 0,
+  p2RoundsWon: 0,
   bannerText: null,
 };
 

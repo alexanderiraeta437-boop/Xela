@@ -1,6 +1,13 @@
 import * as Phaser from "phaser";
 import { ATTACK_DATA, isAttackAction } from "@/game/config";
 import type { FighterEntity } from "@/game/characters/FighterEntity";
+import {
+  playBlock,
+  playHeavyHit,
+  playLightHit,
+  playSpecialAttack,
+  speakVoiceLine,
+} from "@/lib/battleAudio";
 
 export interface HitResolution {
   hitLanded: boolean;
@@ -14,9 +21,19 @@ export interface HitResolution {
  */
 export class CombatSystem {
   private readonly scene: Phaser.Scene;
+  private lastVoiceTimestamp = 0;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
+  }
+
+  private triggerVoiceReaction(critical: boolean): void {
+    const now = this.scene.time.now;
+    if (!critical && now - this.lastVoiceTimestamp < 1200) {
+      return;
+    }
+    this.lastVoiceTimestamp = now;
+    speakVoiceLine(undefined, { critical });
   }
 
   /**
@@ -63,7 +80,10 @@ export class CombatSystem {
     );
 
     defender.hp = Math.max(0, defender.hp - finalDamage);
-    attacker.energy = Math.min(100, attacker.energy + frame.energyGain);
+    attacker.energy = Math.min(
+      100,
+      attacker.energy + frame.energyGain * attacker.getEnergyGainMultiplier()
+    );
     defender.energy = Math.min(100, defender.energy + (isBlocking ? 10 : 7));
 
     const kbDir = attacker.facing;
@@ -84,6 +104,22 @@ export class CombatSystem {
       defender.setAction("ko");
     }
 
+    const attackType = attacker.action;
+    if (isBlocking) {
+      playBlock();
+    } else if (attackType === "light") {
+      playLightHit();
+      if (attacker.comboHits >= 3 || defender.hp <= 0) {
+        this.triggerVoiceReaction(defender.hp <= 0);
+      }
+    } else if (attackType === "heavy") {
+      playHeavyHit();
+      this.triggerVoiceReaction(defender.hp <= 0);
+    } else if (attackType === "special") {
+      playHeavyHit();
+      this.triggerVoiceReaction(true);
+    }
+
     this.spawnHitEffects(
       (attacker.x + defender.x) / 2,
       defender.y - 62,
@@ -102,9 +138,10 @@ export class CombatSystem {
   }
 
   /**
-   * Genera efectos visuales propios de la habilidad especial de cada personaje.
+   * Genera efectos visuales y sonoros propios de la habilidad especial de cada personaje.
    */
   public spawnSpecialVisual(caster: FighterEntity): void {
+    playSpecialAttack();
     const color = Phaser.Display.Color.HexStringToColor(
       caster.fighter.themeColor
     ).color;

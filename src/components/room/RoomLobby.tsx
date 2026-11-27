@@ -17,6 +17,11 @@ import {
   leaveRoom,
   registerRoomDisconnectCleanup,
 } from "@/lib/rtdb";
+import {
+  playRoundBell,
+  stopDashboardMusic,
+  unlockBattleAudio,
+} from "@/lib/battleAudio";
 import { useAuth } from "@/hooks/useAuth";
 import { useGameStore } from "@/stores/useGameStore";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -62,6 +67,10 @@ export function RoomLobby({ roomCode, role, onLeave }: RoomLobbyProps) {
           role === "host"
             ? data.guestName || "Rival"
             : data.hostName || "Anfitrión";
+
+        stopDashboardMusic();
+        unlockBattleAudio();
+        playRoundBell();
 
         setMatchConfig({
           mode: "multiplayer",

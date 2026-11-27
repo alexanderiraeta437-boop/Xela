@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Swords,
   Zap,
@@ -19,14 +20,22 @@ import { Footer } from "@/components/layout/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CHARACTERS } from "@/constants/characters";
+import { getCachedSession } from "@/lib/session";
 
 const APK_DOWNLOAD_URL =
   "https://github.com/alexanderiraeta437-boop/Xela/releases/download/v1.0.0/Xela-Combates-1v1-v1.0.apk";
 
 export default function LandingPage() {
+  const router = useRouter();
   const [isNativeApk, setIsNativeApk] = useState(false);
 
   useEffect(() => {
+    const cachedSession = getCachedSession();
+    if (cachedSession) {
+      router.replace("/dashboard");
+      return;
+    }
+
     const cap = (
       window as unknown as {
         Capacitor?: { isNativePlatform?: () => boolean };
@@ -35,7 +44,7 @@ export default function LandingPage() {
     if (cap?.isNativePlatform?.()) {
       setIsNativeApk(true);
     }
-  }, []);
+  }, [router]);
 
   return (
     <div className="flex min-h-screen flex-col bg-[#050507]">

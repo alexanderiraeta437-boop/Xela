@@ -1,5 +1,9 @@
 import * as Phaser from "phaser";
 import type { CombatAction, Fighter } from "@/types";
+import {
+  computeFighterArtifactBonuses,
+  type ComputedArtifactBonuses,
+} from "@/constants/artifacts";
 import { GROUND_Y, STAGE_LEFT, STAGE_RIGHT } from "@/game/config";
 
 /**
@@ -45,18 +49,26 @@ export class FighterEntity {
 
   private readonly accentHex: number;
   private flashTimer = 0;
+  public equippedArtifactIds: string[] = [];
+  private artifactBonuses: ComputedArtifactBonuses;
 
   constructor(
     scene: Phaser.Scene,
     fighter: Fighter,
     x: number,
-    isPlayerOne: boolean
+    isPlayerOne: boolean,
+    equippedArtifactIds: string[] = []
   ) {
     this.fighter = fighter;
     this.isPlayerOne = isPlayerOne;
     this.x = x;
     this.y = GROUND_Y;
     this.facing = isPlayerOne ? 1 : -1;
+    this.equippedArtifactIds = [...equippedArtifactIds];
+    this.artifactBonuses = computeFighterArtifactBonuses(
+      fighter.id,
+      this.equippedArtifactIds
+    );
 
     // Escala de HP basada en stats del personaje (ej. 85..140 -> 170..280 HP en combate)
     this.maxHp = fighter.stats.hp * 2;
@@ -230,19 +242,58 @@ export class FighterEntity {
     return this.y >= GROUND_Y - 0.5;
   }
 
+  public applyEquippedArtifacts(ids: string[]): void {
+    this.equippedArtifactIds = [...ids];
+    this.artifactBonuses = computeFighterArtifactBonuses(
+      this.fighter.id,
+      this.equippedArtifactIds
+    );
+  }
+
   public getMoveSpeed(): number {
-    // 55..100 -> ~240..390 px/s
-    return 155 + this.fighter.stats.speed * 2.35;
+    // 55..100 -> ~240..390 px/s, potenciado por artefactos de velocidad
+    return (155 + this.fighter.stats.speed * 2.35) * this.artifactBonuses.speedMult;
   }
 
   public getBasePower(): number {
-    // 70..100 -> ~14..22 daño base en ataque ligero
-    return 7 + this.fighter.stats.power * 0.15;
+    // 70..100 -> ~14..22 daño base en ataque ligero, potenciado por artefactos de daño
+    return (7 + this.fighter.stats.power * 0.15) * this.artifactBonuses.damageMult;
   }
 
   public getDefenseFactor(): number {
-    // 55..95 -> reducción de daño del 8% al 30%
-    return 1 - (this.fighter.stats.defense * 0.3) / 100;
+    // 55..95 -> reducción de daño del 8% al 30%, más bonificación de artefactos de defensa
+    const baseMitigation = (this.fighter.stats.defense * 0.3) / 100;
+    const totalMitigation = Math.min(0.55, baseMitigation + this.artifactBonuses.defenseBonus);
+    return 1 - totalMitigation;
+  }
+
+  public getEnergyGainMultiplier(): number {
+    return this.artifactBonuses.energyGainMult;
+  }
+
+  /**
+   * Reinicia vida, energía, posición y estado del luchador para iniciar un nuevo round.
+   */
+  public resetForRound(startX: number, facing: 1 | -1): void {
+    this.x = startX;
+    this.y = GROUND_Y;
+    this.vx = 0;
+    this.vy = 0;
+    this.facing = facing;
+    this.hp = this.maxHp;
+    this.energy = 25;
+    this.action = "idle";
+    this.actionElapsed = 0;
+    this.actionSeq += 1;
+    this.stunRemaining = 0;
+    this.invulnRemaining = 0;
+    this.hasDealtHitThisAction = false;
+    this.comboHits = 0;
+    this.comboResetTimer = 0;
+    this.flashTimer = 0;
+    this.torso.setFillStyle(0x181824);
+    this.head.setFillStyle(0x1f1f2d);
+    this.applyFacing();
   }
 
   public setAction(next: CombatAction): void {

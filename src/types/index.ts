@@ -37,7 +37,38 @@ export interface Fighter {
 }
 
 /**
- * Documento de usuario almacenado en Firestore (colección `users/{uid}`).
+ * Ranura de artefacto de combate.
+ */
+export type ArtifactSlot = "weapon" | "accessory";
+
+/**
+ * Bonificadores porcentuales reales en combate otorgados por un artefacto (+6% a +12%).
+ */
+export interface ArtifactStatsBoost {
+  damagePct?: number;
+  defensePct?: number;
+  speedPct?: number;
+  energyGainPct?: number;
+}
+
+/**
+ * Artefacto exclusivo de un luchador en la tienda de Xela.
+ */
+export interface Artifact {
+  id: string;
+  fighterId: string;
+  name: string;
+  slot: ArtifactSlot;
+  description: string;
+  price: number;
+  boosts: ArtifactStatsBoost;
+  boostLabel: string;
+  accentColor: string;
+}
+
+/**
+ * Documento de usuario almacenado en Firestore (colección `users/{uid}`)
+ * y cacheado localmente bajo `xela_cached_session`.
  */
 export interface UserProfile {
   uid: string;
@@ -49,6 +80,12 @@ export interface UserProfile {
   winStreak: number;
   unlockedFighters: string[];
   rankingPoints: number;
+  coins: number;
+  loginStreak: number;
+  lastClaimTimestamp: number | null;
+  ownedArtifacts: string[];
+  equippedArtifacts: Record<string, string[]>;
+  unlockedAvatars: string[];
   createdAt: Timestamp | number | null;
   lastLogin: Timestamp | number | null;
 }
@@ -73,6 +110,8 @@ export interface PlayerCombatSync {
   action: CombatAction;
   actionSeq: number;
   hitSeq: number;
+  round?: number;
+  equippedArtifacts?: string[];
   damageTaken?: number;
   updatedAt: number;
 }
@@ -137,7 +176,10 @@ export interface MatchResult {
   opponentFighterId: string;
   opponentName: string;
   pointsDelta: number;
+  coinsEarned: number;
   newlyUnlockedFighters: string[];
   remainingHp: number;
   durationSeconds: number;
+  playerRoundsWon: number;
+  opponentRoundsWon: number;
 }

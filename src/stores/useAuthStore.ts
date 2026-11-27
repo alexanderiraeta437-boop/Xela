@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { User } from "firebase/auth";
 import type { UserProfile } from "@/types";
-import { getUserProfile } from "@/lib/firestore";
+import { getUserProfile, saveCachedUserProfile } from "@/lib/firestore";
 
 interface AuthState {
   user: User | null;
@@ -26,16 +26,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   selectedFighterId: "kai",
 
   setUser: (user) => set({ user }),
-  setProfile: (profile) => set({ profile }),
+  setProfile: (profile) => {
+    if (profile) {
+      saveCachedUserProfile(profile);
+    }
+    set({ profile });
+  },
   setLoading: (loading) => set({ loading }),
   setInitialized: (initialized) => set({ initialized }),
   setSelectedFighterId: (selectedFighterId) => set({ selectedFighterId }),
 
   refreshProfile: async () => {
-    const uid = get().user?.uid;
+    const uid = get().user?.uid ?? get().profile?.uid;
     if (!uid) return;
     const fresh = await getUserProfile(uid);
     if (fresh) {
+      saveCachedUserProfile(fresh);
       set({ profile: fresh });
     }
   },
@@ -45,6 +51,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       user: null,
       profile: null,
       loading: false,
+      initialized: true,
       selectedFighterId: "kai",
     }),
 }));

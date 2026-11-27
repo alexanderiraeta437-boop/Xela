@@ -12,10 +12,22 @@ import {
   Shield,
   Swords,
   Trophy,
+  Volume2,
+  VolumeX,
   Zap,
 } from "lucide-react";
 import type Phaser from "phaser";
 import { getCharacterById } from "@/constants/characters";
+import {
+  cleanupBattleAudio,
+  isMuted,
+  playRoundBell,
+  startDashboardMusic,
+  stopDashboardMusic,
+  subscribeAudioState,
+  toggleMute,
+  unlockBattleAudio,
+} from "@/lib/battleAudio";
 import { recordMatchResult } from "@/lib/firestore";
 import { leaveRoom, resetRoomForRematch } from "@/lib/rtdb";
 import { useAuth } from "@/hooks/useAuth";
@@ -52,6 +64,21 @@ export function PhaserArena() {
 
   const [rematchNonce, setRematchNonce] = useState(0);
   const [savingStats, setSavingStats] = useState(false);
+  const [audioMuted, setAudioMuted] = useState(() => isMuted());
+  const equippedArtifactsRef = useRef<string[]>(
+    profile?.equippedArtifacts?.[playerFighterId] ?? []
+  );
+
+  useEffect(() => {
+    equippedArtifactsRef.current =
+      profile?.equippedArtifacts?.[playerFighterId] ?? [];
+  }, [profile?.equippedArtifacts, playerFighterId]);
+
+  useEffect(() => {
+    return subscribeAudioState((state) => {
+      setAudioMuted(state.muted);
+    });
+  }, []);
 
   const isGuest = mode === "multiplayer" && role === "guest";
   const p1Char = getCharacterById(isGuest ? opponentFighterId : playerFighterId);
@@ -78,9 +105,16 @@ export function PhaserArena() {
         opponentFighterId,
         playerUid: user.uid,
         opponentName,
+        playerEquippedArtifacts: equippedArtifactsRef.current,
         getVirtualControls: () => useGameStore.getState().virtualControls,
         onHudUpdate: (partial) => setHud(partial),
-        onMatchEnd: async ({ won, remainingHp, durationSeconds }) => {
+        onMatchEnd: async ({
+          won,
+          remainingHp,
+          durationSeconds,
+          playerRoundsWon,
+          opponentRoundsWon,
+        }) => {
           if (savedResultRef.current) return;
           savedResultRef.current = true;
           setSavingStats(true);
@@ -101,9 +135,12 @@ export function PhaserArena() {
               opponentFighterId,
               opponentName,
               pointsDelta: res.pointsDelta,
+              coinsEarned: res.coinsEarned,
               newlyUnlockedFighters: res.newlyUnlocked,
               remainingHp,
               durationSeconds,
+              playerRoundsWon,
+              opponentRoundsWon,
             });
           } catch (err) {
             console.error("Error guardando resultado:", err);
@@ -115,9 +152,12 @@ export function PhaserArena() {
               opponentFighterId,
               opponentName,
               pointsDelta: 0,
+              coinsEarned: won ? 20 : 5,
               newlyUnlockedFighters: [],
               remainingHp,
               durationSeconds,
+              playerRoundsWon,
+              opponentRoundsWon,
             });
           } finally {
             setSavingStats(false);
@@ -130,6 +170,7 @@ export function PhaserArena() {
 
     return () => {
       cancelled = true;
+      cleanupBattleAudio();
       if (gameRef.current) {
         gameRef.current.destroy(true);
         gameRef.current = null;
@@ -149,6 +190,14 @@ export function PhaserArena() {
     setLastResult,
     setProfile,
   ]);
+
+  useEffect(() => {
+    if (!lastResult) return;
+    const timer = setTimeout(() => {
+      startDashboardMusic();
+    }, 1700);
+    return () => clearTimeout(timer);
+  }, [lastResult]);
 
   const handleFullscreen = async () => {
     try {
@@ -174,6 +223,10 @@ export function PhaserArena() {
   };
 
   const handleRematch = async () => {
+    stopDashboardMusic();
+    cleanupBattleAudio();
+    unlockBattleAudio();
+    playRoundBell();
     resetFightState();
 
     if (mode === "multiplayer" && roomCode && role) {
@@ -195,6 +248,7 @@ export function PhaserArena() {
   };
 
   const handleExitArena = async () => {
+    cleanupBattleAudio();
     if (mode === "multiplayer" && roomCode && role) {
       try {
         await leaveRoom(roomCode, role);
@@ -209,6 +263,7 @@ export function PhaserArena() {
   const holdProps = (btn: "left" | "right" | "jump" | "block") => ({
     onPointerDown: (e: React.PointerEvent) => {
       e.preventDefault();
+      unlockBattleAudio();
       setVirtualButton(btn, true);
     },
     onPointerUp: () => setVirtualButton(btn, false),
@@ -221,6 +276,7 @@ export function PhaserArena() {
   return (
     <div
       ref={arenaWrapperRef}
+      onPointerDown={() => unlockBattleAudio()}
       className="fixed inset-0 z-40 flex h-[100dvh] w-screen flex-col overflow-hidden bg-black select-none"
     >
       {/* HUD Superior Compacto y Flotante */}
@@ -282,6 +338,24 @@ export function PhaserArena() {
                 indicatorColor="#38BDF8"
                 className="h-1"
               />
+              <div className="flex shrink-0 items-center gap-1" title="Rounds ganados P1">
+                {[0, 1].map((idx) => (
+                  <span
+                    key={idx}
+                    className={cn(
+                      "h-2.5 w-2.5 rounded-full border transition-all",
+                      idx < hud.p1RoundsWon
+                        ? "border-white shadow-[0_0_8px_rgba(0,240,255,0.85)]"
+                        : "border-white/25 bg-zinc-900"
+                    )}
+                    style={
+                      idx < hud.p1RoundsWon
+                        ? { backgroundColor: p1Char.themeColor }
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
               {hud.comboP1 > 1 && (
                 <Badge variant="accent" className="px-1.5 py-0 text-[9px]">
                   {hud.comboP1}x
@@ -290,8 +364,11 @@ export function PhaserArena() {
             </div>
           </div>
 
-          {/* Timer + Sala */}
+          {/* Timer + Round + Sala */}
           <div className="flex flex-col items-center justify-center rounded-lg border border-white/15 bg-black px-2.5 py-1 sm:px-4">
+            <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400">
+              {hud.currentRound === 3 ? "DESEMPATE" : `ROUND ${hud.currentRound}`}
+            </span>
             <span className="font-mono text-lg font-bold leading-none text-white sm:text-2xl">
               {String(hud.timer).padStart(2, "0")}
             </span>
@@ -341,6 +418,24 @@ export function PhaserArena() {
                 indicatorColor="#38BDF8"
                 className="h-1"
               />
+              <div className="flex shrink-0 items-center gap-1" title="Rounds ganados P2">
+                {[0, 1].map((idx) => (
+                  <span
+                    key={idx}
+                    className={cn(
+                      "h-2.5 w-2.5 rounded-full border transition-all",
+                      idx < hud.p2RoundsWon
+                        ? "border-white shadow-[0_0_8px_rgba(255,45,149,0.85)]"
+                        : "border-white/25 bg-zinc-900"
+                    )}
+                    style={
+                      idx < hud.p2RoundsWon
+                        ? { backgroundColor: p2Char.themeColor }
+                        : undefined
+                    }
+                  />
+                ))}
+              </div>
               {hud.comboP2 > 1 && (
                 <Badge variant="accent" className="px-1.5 py-0 text-[9px]">
                   {hud.comboP2}x
@@ -349,17 +444,42 @@ export function PhaserArena() {
             </div>
           </div>
 
-          {/* Botón Pantalla Completa */}
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={handleFullscreen}
-            className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
-            title="Pantalla completa"
-          >
-            <Maximize2 className="h-4 w-4" />
-          </Button>
+          {/* Controles de Audio y Pantalla Completa */}
+          <div className="flex items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                unlockBattleAudio();
+                toggleMute();
+              }}
+              className={cn(
+                "h-8 w-8 p-0 hover:text-white",
+                audioMuted ? "text-rose-400" : "text-zinc-400"
+              )}
+              title={audioMuted ? "Activar audio" : "Silenciar audio"}
+              aria-label={audioMuted ? "Activar audio" : "Silenciar audio"}
+            >
+              {audioMuted ? (
+                <VolumeX className="h-4 w-4" />
+              ) : (
+                <Volume2 className="h-4 w-4" />
+              )}
+            </Button>
+
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleFullscreen}
+              className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
+              title="Pantalla completa"
+              aria-label="Pantalla completa"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -483,17 +603,21 @@ export function PhaserArena() {
             </h2>
 
             <p className="mt-1.5 text-sm text-zinc-400">
-              vs {lastResult.opponentName} • {lastResult.durationSeconds}s
+              vs {lastResult.opponentName} • Marcador{" "}
+              <span className="font-mono font-bold text-white">
+                {lastResult.playerRoundsWon} - {lastResult.opponentRoundsWon}
+              </span>{" "}
+              • {lastResult.durationSeconds}s
             </p>
 
-            <div className="mt-5 grid grid-cols-2 gap-3 rounded-xl border border-white/10 bg-zinc-950 p-4 text-sm">
+            <div className="mt-5 grid grid-cols-3 gap-2.5 rounded-xl border border-white/10 bg-zinc-950 p-4 text-sm">
               <div>
-                <span className="block text-xs text-zinc-500">
-                  Puntos de Ranking
+                <span className="block text-[11px] text-zinc-500">
+                  Puntos Ranking
                 </span>
                 <span
                   className={cn(
-                    "font-mono text-xl font-bold",
+                    "font-mono text-lg font-bold sm:text-xl",
                     lastResult.pointsDelta >= 0
                       ? "text-emerald-400"
                       : "text-red-400"
@@ -505,10 +629,18 @@ export function PhaserArena() {
                 </span>
               </div>
               <div>
-                <span className="block text-xs text-zinc-500">
+                <span className="block text-[11px] text-zinc-500">
+                  Xela Coins
+                </span>
+                <span className="font-mono text-lg font-bold text-amber-400 sm:text-xl">
+                  +{lastResult.coinsEarned}
+                </span>
+              </div>
+              <div>
+                <span className="block text-[11px] text-zinc-500">
                   Vida Restante
                 </span>
-                <span className="font-mono text-xl font-bold text-white">
+                <span className="font-mono text-lg font-bold text-white sm:text-xl">
                   {lastResult.remainingHp} HP
                 </span>
               </div>
